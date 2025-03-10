@@ -205,13 +205,7 @@ This benchmark tests a comprehensive set of AI capabilities that are relevant to
 - **Strategic Thinking**: Reflects the planning needed in project management and resource allocation
 - **Adaptability**: Tests how well AI can respond to changing conditions - critical for autonomous systems
 
-## Tips for Optimal Performance
-
-- Different LLMs have different strengths:
-  - Gemini: Good at visual reasoning and navigation
-  - GPT-4o: Strong at complex strategic planning
-  - Claude: Excellent at tracking context and following instructions
-
+## Important Tips
 - Each provider has different rate limits and costs:
   - Adjust the `decision_cooldown` parameter to match provider rate limits
   - Consider costs when benchmarking over longer periods
