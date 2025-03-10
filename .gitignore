@@ -1,0 +1,7 @@
+.env
+pokemon-red.sav
+config.json
+pokemon_ai.log
+thinking_history.txt
+pokemon_logger.py
+data/*
