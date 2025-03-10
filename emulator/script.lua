@@ -10,6 +10,9 @@ local currentKeyIndex = nil
 local keyPressStartFrame = 0
 local keyPressFrames = 30  -- Hold keys for 30 frames (about 0.5 seconds)
 
+-- Path settings - simple, no config needed
+local screenshotPath = "data/screenshots/screenshot.png"
+
 -- Debug buffer setup
 function setupBuffer()
     debugBuffer = console:createBuffer("Debug")
@@ -24,10 +27,12 @@ function captureAndSendScreenshot()
     
     -- Only capture screenshots every 3 seconds
     if currentTime - lastScreenshotTime >= screenshotInterval then
-        local screenshotPath = "/Users/alex/Documents/LLM-Pokemon-Red-Benchmark/data/screenshots/screenshot.png"
-        emu:screenshot(screenshotPath) -- Take the screenshot
-        sendMessage("screenshot", screenshotPath) -- Send path to Python controller
-        debugBuffer:print("Screenshot captured and sent: " .. screenshotPath .. "\n")
+        -- Take the screenshot
+        emu:screenshot(screenshotPath)
+        
+        -- Send path to Python controller
+        sendMessage("screenshot", screenshotPath)
+        debugBuffer:print("Screenshot captured and saved to: " .. screenshotPath .. "\n")
         
         -- Update the last screenshot time
         lastScreenshotTime = currentTime
