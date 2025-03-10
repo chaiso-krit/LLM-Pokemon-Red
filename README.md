@@ -227,20 +227,14 @@ To add a new LLM provider:
 3. Update the factory function to return your new provider
 4. Add the provider configuration to your `config.json`
 
-### Improving Game Understanding
-
-Consider these enhancements:
-- OCR to read game text
-- Object detection to identify game elements
-- Enhanced memory systems to track game state
 
 ## Contributing
 
 Contributions are welcome! Here are some ways to get involved:
+- Improve code base
 - Run benchmarks with different models and share your results
 - Add support for additional LLM providers
-- Implement new evaluation metrics
-- Create visualization tools for benchmark results
+- Create visualization tools for benchmark results and gameplay
 
 ## Citation
 
