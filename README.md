@@ -40,11 +40,9 @@ This project uses a combination of components to allow an AI to play Pokémon Re
 
 Initial testing reveals fascinating differences between leading AI models:
 
-- **Gemini** excels at quickly interpreting visual elements and making rapid decisions
-- **GPT-4o** demonstrates stronger strategic thinking and planning complex action sequences
-- **Claude** shows methodical exploration and better memory utilization for long-term goals
+ - Each model has their own strengths and weaknesses and display distinct "play styles" that reflect their underlying architecture and training.
 
-These differences highlight how this benchmark can reveal aspects of AI capabilities that text-only evaluations miss. Each model displays distinct "play styles" that reflect their underlying architecture and training.
+ MORE RESULTS COMING SOON
 
 ## Supported LLM Providers
 
