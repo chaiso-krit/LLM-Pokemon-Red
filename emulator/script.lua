@@ -24,7 +24,7 @@ function captureAndSendScreenshot()
     
     -- Only capture screenshots every 3 seconds
     if currentTime - lastScreenshotTime >= screenshotInterval then
-        local screenshotPath = "/Users/alex/Documents/gemini-plays-pokemon/data/screenshots/screenshot.png"
+        local screenshotPath = "/Users/alex/Documents/LLM-Pokemon-Red-Benchmark/data/screenshots/screenshot.png"
         emu:screenshot(screenshotPath) -- Take the screenshot
         sendMessage("screenshot", screenshotPath) -- Send path to Python controller
         debugBuffer:print("Screenshot captured and sent: " .. screenshotPath .. "\n")
