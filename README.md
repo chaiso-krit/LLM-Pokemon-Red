@@ -12,7 +12,7 @@ This project provides a unique way to evaluate modern AI systems through gamepla
 - **Strategic Planning**: Demands forward planning for team building, route planning, and battle strategies
 - **Adaptability**: Tests how well AI can respond to unexpected game situations and recover from mistakes
 
-By restricting the AI to only screenshots and controller inputs that a human would use, we create a standardized environment to compare different models on a complex, multi-step task that closely mirrors real-world problem-solving.
+By restricting the AI to only screenshots, memory and controller inputs, we create a standardized environment to compare different models on a complex, multi-step task that closely mirrors real-world problem-solving.
 
 ## How It Works
 
