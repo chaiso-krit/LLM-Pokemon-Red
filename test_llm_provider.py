@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Utility to test LLM providers for the Pokémon AI project
+Utility to test LLM providers
 """
 
 import os

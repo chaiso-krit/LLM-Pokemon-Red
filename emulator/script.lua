@@ -10,8 +10,8 @@ local currentKeyIndex = nil
 local keyPressStartFrame = 0
 local keyPressFrames = 30  -- Hold keys for 30 frames (about 0.5 seconds)
 
--- Path settings - simple, no config needed
-local screenshotPath = "data/screenshots/screenshot.png"
+-- Path settings with absolute path
+local screenshotPath = "/Users/alex/Documents/LLM-Pokemon-Red-Benchmark/data/screenshots/screenshot.png"
 
 -- Debug buffer setup
 function setupBuffer()
@@ -27,6 +27,9 @@ function captureAndSendScreenshot()
     
     -- Only capture screenshots every 3 seconds
     if currentTime - lastScreenshotTime >= screenshotInterval then
+        -- Create directory if it doesn't exist
+        os.execute("mkdir -p \"/Users/alex/Documents/LLM-Pokemon-Red-Benchmark/data/screenshots\"")
+        
         -- Take the screenshot
         emu:screenshot(screenshotPath)
         
@@ -143,4 +146,9 @@ callbacks:add("frame", handleKeyPress)
 if emu then
     setupBuffer()
     startSocket()
+    
+    -- Create directory on startup
+    os.execute("mkdir -p \"/Users/alex/Documents/LLM-Pokemon-Red-Benchmark/data/screenshots\"")
+    os.execute("mkdir -p \"/Users/alex/Documents/LLM-Pokemon-Red-Benchmark/data/screenshots/comparison\"")
+    debugBuffer:print("Created screenshot directories\n")
 end
