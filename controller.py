@@ -276,15 +276,14 @@ class PokemonGameController:
                 print(f"Error summarizing notepad: {e}")
 
     def process_screenshot(self, screenshot_path=None):
-        """Process the latest screenshot with the LLM provider, also sending previous screenshot"""
         current_time = time.time()
         
-        # Check if we should make a new decision based on cooldown
+        # Check cooldown
         if current_time - self.last_decision_time < self.decision_cooldown:
-            return None  # Skip decision making during cooldown
-            
+            return None
+                
         try:
-            # Read the notepad and thinking history
+            # Read game state data
             notepad_content = self.read_notepad()
             thinking_history = self.read_thinking_history()
             
@@ -295,53 +294,18 @@ class PokemonGameController:
                 self.logger.error(f"Screenshot not found at {path_to_use}")
                 return None
             
-            # Setup previous screenshot path
-            comparison_folder = os.path.join(os.path.dirname(self.screenshot_path), 'comparison')
-            os.makedirs(comparison_folder, exist_ok=True)
-            prev_screenshot_path = os.path.join(comparison_folder, 'previous_screenshot.png')
-            last_action_path = os.path.join(comparison_folder, 'last_action.txt')
-            
-            # Get the last action (button pressed)
-            last_action = "NONE (First action)"
-            if os.path.exists(last_action_path):
-                try:
-                    with open(last_action_path, 'r') as f:
-                        last_action = f.read().strip()
-                except:
-                    pass
-            
             # Load current screenshot
-            current_image = PIL.Image.open(path_to_use)
+            try:
+                current_image = PIL.Image.open(path_to_use)
+            except Exception as e:
+                self.logger.error(f"Error opening screenshot: {e}")
+                return None
             
-            # Check if we have a previous screenshot
-            has_previous = os.path.exists(prev_screenshot_path)
-            previous_image = None
-            
-            if has_previous:
-                previous_image = PIL.Image.open(prev_screenshot_path)
-            
-            # Craft the prompt with the dynamic provider name
             prompt = f"""
-                You are {self.provider_name}, an AI playing Pokémon Fire Red. Look at the screenshots and make decisions to progress in the game.
+                You are {self.provider_name}, an AI playing Pokémon Fire Red. Look at the screenshot and make decisions to progress in the game.
                 
                 ## Game Context
                 - You are playing Pokémon Fire Red for Game Boy Advance
-                - You are at the beginning of the game in Pallet Town
-                - The game has buildings, routes, and towns to navigate through
-                
-                ## Screenshots Information
-                - You are receiving TWO screenshots: current and previous state
-                - The first image is your CURRENT view
-                - The second image is the PREVIOUS view (before your last action)
-                - Your last action was: {last_action}
-                - IMPORTANT: Compare these images to see if your last action had any effect
-                - If the character position is the same in both images, it means you hit a WALL or OBSTACLE
-                
-                ## Pokémon Game Navigation Rules:
-                - Indoor spaces: Rooms have walls and you CAN'T walk through them
-                - In your bedroom, the STAIRS are the YELLOW LADDER in the TOP LEFT corner
-                - Carpets/Rugs indicate walkable areas in rooms
-                - To use stairs or doors, stand DIRECTLY IN FRONT of them and press A
                 
                 ## Your notepad (your memory):
                 {notepad_content}
@@ -350,76 +314,52 @@ class PokemonGameController:
                 {thinking_history}
                 
                 ## Controls Available:
-                - A: Confirm/Select/Interact
-                - B: Cancel/Back
+                - A: Confirm/Select/Interact/Talk/Read text
+                - B: Cancel/Back/Exit menu
                 - START: Open menu
                 - UP, DOWN, LEFT, RIGHT: Move/Navigate
                 
+                ## Important Tips:
+                - In dialogs, press A to advance text
+                - To talk to people, stand in front of them and press A
+                - To enter doors, stand in front of them and press A
+                - Pay close attention to any text on screen for clues
+                
                 ## Your task:
-                1. FIRST: Compare the current and previous screenshots to see if your last action ({last_action}) caused movement
-                2. If you didn't move, conclude there's a wall in that direction and try a DIFFERENT direction
-                3. If you're in the bedroom, locate the yellow ladder (stairs) in the top left corner
-                4. Choose ONE button to press that will make progress
-                5. Update your notepad if needed
+                1. Analyze the current game state in the screenshot
+                2. Choose ONE button to progress in the game
                 
                 Respond in this exact format:
-                THINK: [First analyze if your last action caused movement, then analyze the current situation]
-                BUTTON: [single button name (A, B, START, UP, DOWN, LEFT, RIGHT). YOU MUST include the button you want to press.]
+                THINK: [Detailed analysis of what you see and what you should do]
+                BUTTON: [single button name (A, B, START, UP, DOWN, LEFT, RIGHT)]
                 NOTEPAD: [one of: "no change" OR specific information to add]
-                
-                Buttons must be EXACTLY one of: A, B, START, UP, DOWN, LEFT, RIGHT
                 """
             
-            self.logger.section(f"Sending Screenshots to {self.provider_name}")
+            # Send only current image
+            images = [current_image]
             
-            # Save current screenshot as previous for next time
-            try:
-                current_image.save(prev_screenshot_path)
-            except Exception as e:
-                self.logger.error(f"Error saving previous screenshot: {e}")
+            # Log that we're requesting a decision
+            self.logger.section(f"Requesting decision from {self.provider_name}")
             
-            # Generate response from LLM provider - send both current and previous screenshots if available
-            images = []
-            if current_image:
-                images.append(current_image)
-            if has_previous and previous_image:
-                self.logger.info("Sending both current and previous screenshots for comparison")
-                images.append(previous_image)
-            else:
-                self.logger.info("First screenshot - no previous for comparison")
-            
-            # Use our provider-agnostic interface
+            # Get response from AI
             response_text = self.llm.generate_content(prompt, images)
             
             if response_text:
-                self.logger.success(f"Received response from {self.provider_name}")
-                
-                # Parse response for button press and notepad update
                 button_press, notepad_update, thinking = self.parse_llm_response(response_text)
                 self.last_decision_time = current_time
                 
-                # Log the AI's thinking and actions
-                self.logger.ai_thinking(thinking)
-                
+                # Handle the AI's response
                 if button_press is not None:
-                    # Map button index back to name for better logging
                     button_names = {0: "A", 1: "B", 2: "SELECT", 3: "START", 
                                 4: "RIGHT", 5: "LEFT", 6: "UP", 7: "DOWN",
                                 8: "R", 9: "L"}
                     button_name = button_names.get(button_press, "UNKNOWN")
                     
-                    # Save the button name for next comparison
-                    try:
-                        with open(last_action_path, 'w') as f:
-                            f.write(button_name)
-                    except Exception as e:
-                        self.logger.error(f"Error saving last action: {e}")
+                    # Log AI's thinking and action using the logger methods
+                    if thinking:
+                        self.logger.ai_thinking(thinking)
                     
                     self.logger.ai_action(button_name, button_press)
-                
-                if notepad_update:
-                    new_content = notepad_update.split("## Update")[-1] if "## Update" in notepad_update else notepad_update
-                    self.logger.notepad(new_content)
                 
                 return {
                     'button': button_press,

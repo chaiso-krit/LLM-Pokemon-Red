@@ -8,7 +8,7 @@ screenshotInterval = 3  -- Capture screenshots every 3 seconds
 -- Global variables for key press tracking
 local currentKeyIndex = nil
 local keyPressStartFrame = 0
-local keyPressFrames = 30  -- Hold keys for 30 frames (about 0.5 seconds)
+local keyPressFrames = 5   -- Hold keys for 5 frames
 
 -- Path settings with absolute path
 local screenshotPath = "/Users/alex/Documents/LLM-Pokemon-Red-Benchmark/data/screenshots/screenshot.png"

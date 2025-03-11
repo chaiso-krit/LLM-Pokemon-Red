@@ -4,3 +4,4 @@ config.json
 thinking_history.txt
 data/*
 pokemon-red.gba
+__pycache__
