@@ -13,13 +13,12 @@ class PokemonLogger:
         # Set up logging format
         self.debug_mode = debug_mode
         
-        # Create a basic logger
+        # Create a basic logger with only console output
         logging.basicConfig(
             level=logging.INFO,
             format='%(message)s',
             handlers=[
-                logging.StreamHandler(),  # Console handler
-                logging.FileHandler("pokemon_ai.log")  # File handler
+                logging.StreamHandler()  # Console handler only
             ]
         )
         
