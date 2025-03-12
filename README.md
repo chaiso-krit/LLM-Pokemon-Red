@@ -78,7 +78,7 @@ python test_llm_provider.py
 
 For a visual guide to setting up and running the project, watch this tutorial:
 
-[![LLM Pokemon Red Benchmark Tutorial](https://cdn.loom.com/sessions/thumbnails/3088f11e048346a98b3273dd9d055df5-with-play.gif)](https://www.loom.com/share/3088f11e048346a98b3273dd9d055df5?sid=c67ff8fd-8dae-402d-a124-52e77aa6fc92)
+🎬 [**Watch the Video on Loom**](https://www.loom.com/share/3088f11e048346a98b3273dd9d055df5?sid=c67ff8fd-8dae-402d-a124-52e77aa6fc92)
 
 ## Supported LLM Providers
 
