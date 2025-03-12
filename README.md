@@ -8,8 +8,6 @@ This project challenges AI systems to play Pokémon Red by only seeing the game 
 
 ## How It Works
 
-![System Architecture](https://via.placeholder.com/800x400?text=System+Architecture)
-
 1. **Game Emulator (mGBA)** runs Pokémon Red with a Lua script that:
    - Takes screenshots
    - Receives button commands from the controller
