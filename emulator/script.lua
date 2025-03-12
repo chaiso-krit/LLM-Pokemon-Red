@@ -149,6 +149,5 @@ if emu then
     
     -- Create directory on startup
     os.execute("mkdir -p \"/Users/alex/Documents/LLM-Pokemon-Red-Benchmark/data/screenshots\"")
-    os.execute("mkdir -p \"/Users/alex/Documents/LLM-Pokemon-Red-Benchmark/data/screenshots/comparison\"")
     debugBuffer:print("Created screenshot directories\n")
 end
