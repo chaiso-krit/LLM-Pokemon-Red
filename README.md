@@ -6,6 +6,10 @@
 
 This project challenges AI systems to play Pokémon Red by only seeing the game screen, just like a human would. It tests the AI's ability to understand visuals, make decisions, remember context, plan strategies, and adapt to changing situations - all valuable skills that translate to real-world AI applications.
 
+## Demo
+
+🎬 [**Watch the Video on Loom**](https://www.loom.com/share/bf5114789d4a4a9fb6fefa5488e7a15f?sid=dbbdeb60-9f4f-4f39-af26-bd68f6935c5e)
+
 ## How It Works
 
 1. **Game Emulator (mGBA)** runs Pokémon Red with a Lua script that:
@@ -73,12 +77,6 @@ python test_llm_provider.py
    - Load and run the `script.lua` file
    
    This sequence is important! The controller must be running before you activate the Lua script.
-
-## Video Tutorial
-
-For a visual guide to setting up and running the project, watch this tutorial:
-
-🎬 [**Watch the Video on Loom**](https://www.loom.com/share/bf5114789d4a4a9fb6fefa5488e7a15f?sid=dbbdeb60-9f4f-4f39-af26-bd68f6935c5e)
 
 ## Supported LLM Providers
 
