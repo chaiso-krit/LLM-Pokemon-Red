@@ -1,11 +1,3 @@
 # Pokémon Red Game AI Notepad
 I am Gemini and I am playing Pokémon Red. I need to record important information here.
 
-## Goals
-- Explore the world
-- Catch and train Pokémon
-- Defeat gym leaders
-
-## Current Status
-Just started the game in Pallet Town at my house I need to leave to find Professor Oak
-

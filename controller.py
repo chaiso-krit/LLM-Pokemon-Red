@@ -3,15 +3,386 @@ import os
 import socket
 import time
 import threading
-import re
 import PIL.Image
 import signal
 import sys
 import atexit
 import argparse
+import requests
+import json
+from enum import Enum
+from typing import Dict, List, Any, Tuple, Deque
+from collections import deque
+
+# Import from your existing modules
 from pokemon_logger import PokemonLogger
-from llm_provider import get_llm_provider  # Import our new provider factory
-from config_loader import load_config  # Import the config loader
+from config_loader import load_config
+
+class Provider(str, Enum):
+    ANTHROPIC = "anthropic"
+    GOOGLE = "google"
+    OPENAI = "openai"
+
+class Tool:
+    def __init__(self, name: str, description: str, parameters: List[Dict[str, Any]]):
+        self.name = name
+        self.description = description
+        self.parameters = parameters
+    
+    def to_provider_format(self, provider: Provider) -> Dict[str, Any]:
+        schema = {
+            "type": "object",
+            "properties": {
+                p["name"]: {
+                    "type": p["type"],
+                    "description": p["description"]
+                } for p in self.parameters
+            },
+            "required": [p["name"] for p in self.parameters if p.get("required", False)]
+        }
+        
+        if provider == Provider.ANTHROPIC:
+            return {
+                "name": self.name,
+                "description": self.description,
+                "input_schema": schema
+            }
+        elif provider == Provider.GOOGLE:
+            return {
+                "name": self.name,
+                "description": self.description,
+                "parameters": schema
+            }
+        elif provider == Provider.OPENAI:
+            return {
+                "type": "function",
+                "function": {
+                    "name": self.name,
+                    "description": self.description,
+                    "parameters": schema
+                }
+            }
+
+class ToolCall:
+    def __init__(self, id: str, name: str, arguments: Dict[str, Any]):
+        self.id = id
+        self.name = name
+        self.arguments = arguments
+
+class PokemonGameTools:
+    """
+    Contains all the tools for controlling the Pokemon game
+    """
+    @staticmethod
+    def define_tools() -> List[Tool]:
+        """Define all the tools needed for the Pokemon game controller"""
+        
+        # Tool for pressing a button - THE PRIMARY TOOL
+        press_button = Tool(
+            name="press_button",
+            description="Press a button on the Game Boy emulator to control the game",
+            parameters=[{
+                "name": "button",
+                "type": "string",
+                "description": "Button to press (A, B, START, SELECT, UP, DOWN, LEFT, RIGHT, R, L)",
+                "required": True,
+                "enum": ["A", "B", "SELECT", "START", "RIGHT", "LEFT", "UP", "DOWN", "R", "L"]
+            }]
+        )
+        
+        # Tool for updating the notepad (AI's memory)
+        update_notepad = Tool(
+            name="update_notepad",
+            description="Update the AI's long-term memory with new information about the game state",
+            parameters=[{
+                "name": "content",
+                "type": "string",
+                "description": "Content to add to the notepad. Only include important information about game progress, objectives, or status.",
+                "required": True
+            }]
+        )
+        
+        # ONLY return these two tools
+        return [press_button, update_notepad]
+
+class LLMControlClient:
+    """
+    Client for communicating with LLMs using the tool-based approach
+    """
+    def __init__(self, provider: Provider, api_key: str, model_name: str, max_tokens: int = 1024):
+        self.provider = provider
+        self.api_key = api_key
+        self.model_name = model_name
+        self.max_tokens = max_tokens
+        self._setup_client()
+    
+    def _setup_client(self):
+        """Set up the appropriate client based on the provider"""
+        if self.provider == Provider.ANTHROPIC:
+            self.api_url = "https://api.anthropic.com/v1/messages"
+            self.headers = {
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            }
+        elif self.provider == Provider.OPENAI:
+            from openai import OpenAI
+            self.client = OpenAI(api_key=self.api_key)
+        elif self.provider == Provider.GOOGLE:
+            import google.generativeai as genai
+            genai.configure(api_key=self.api_key)
+            self.client = genai
+    
+    def call_with_tools(self, message: str, tools: List[Tool], images: List[PIL.Image.Image] = None) -> Tuple[Any, List[ToolCall], str]:
+        """
+        Call the LLM with the given message and tools, optionally including images
+        """
+        provider_tools = [tool.to_provider_format(self.provider) for tool in tools]
+        
+        if self.provider == Provider.ANTHROPIC:
+            # Handle images for Claude
+            content = [{"type": "text", "text": message}]
+            
+            if images:
+                for image in images:
+                    import base64
+                    from io import BytesIO
+                    
+                    buffer = BytesIO()
+                    image.save(buffer, format="PNG")
+                    base64_image = base64.b64encode(buffer.getvalue()).decode("utf-8")
+                    
+                    content.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": base64_image
+                        }
+                    })
+            
+            system = """
+            You are an AI playing Pokémon Red. Your ONLY job is to press buttons to control the game.
+            
+            IMPORTANT: You MUST use the press_button function to specify which button to press.
+            
+            Always select the appropriate button based on the context: 
+            - A: To confirm, advance text, or select
+            - B: To cancel or go back
+            - Directional buttons: To navigate
+            - START: To open the menu
+            
+            If you need to add important information to the long-term memory, use update_notepad.
+            """
+            
+            response = requests.post(
+                self.api_url,
+                headers=self.headers,
+                json={
+                    "model": self.model_name,
+                    "max_tokens": self.max_tokens,
+                    "messages": [{"role": "user", "content": content}],
+                    "system": system,
+                    "tools": provider_tools
+                }
+            ).json()
+            
+        elif self.provider == Provider.OPENAI:
+            import base64
+            from io import BytesIO
+            
+            system = """
+            You are an AI playing Pokémon Red. Your ONLY job is to press buttons to control the game.
+            
+            IMPORTANT: You MUST use the press_button function to specify which button to press.
+            
+            Always select the appropriate button based on the context: 
+            - A: To confirm, advance text, or select
+            - B: To cancel or go back
+            - Directional buttons: To navigate
+            - START: To open the menu
+            
+            If you need to add important information to the long-term memory, use update_notepad.
+            """
+            
+            messages = [
+                {"role": "system", "content": system},
+            ]
+            
+            if images:
+                # Add images to content
+                content = []
+                content.append({"type": "text", "text": message})
+                
+                for image in images:
+                    buffer = BytesIO()
+                    image.save(buffer, format="PNG")
+                    base64_image = base64.b64encode(buffer.getvalue()).decode("utf-8")
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{base64_image}"
+                        }
+                    })
+                
+                messages.append({"role": "user", "content": content})
+            else:
+                messages.append({"role": "user", "content": message})
+            
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                tools=provider_tools,
+                tool_choice="auto",
+                max_tokens=self.max_tokens
+            )
+            
+        elif self.provider == Provider.GOOGLE:
+            import google.generativeai as genai
+            
+            model = self.client.GenerativeModel(model_name=self.model_name)
+            
+            # Tell Gemini EXPLICITLY that it must use the press_button function
+            system_message = """
+            You are playing Pokémon Red. You MUST press buttons to control the game.
+            
+            VERY IMPORTANT: After analyzing the screenshot, use the press_button function to execute a button press.
+            You are REQUIRED to use the press_button function with every response.
+            
+            DO NOT just describe what button to press - you MUST execute the press_button function.
+            
+            If you need to record important information for long-term memory, use the update_notepad function.
+            """
+            
+            # Create conversation with extremely direct instructions
+            chat = model.start_chat(
+                history=[
+                    {"role": "user", "parts": [system_message]},
+                    {"role": "model", "parts": ["I understand. For every screenshot, I will use the press_button function to specify which button to press (A, B, UP, DOWN, etc.)."]}
+                ]
+            )
+            
+            # Simple, direct message focusing on button selection
+            enhanced_message = f"{message}\n\nYou MUST use the press_button function. Select which button to press (A, B, UP, DOWN, LEFT, RIGHT, START or SELECT)."
+            content_parts = [enhanced_message]
+            
+            if images:
+                for image in images:
+                    content_parts.append(image)
+            
+            # Send the message with the image
+            response = chat.send_message(
+                content=content_parts,
+                tools={"function_declarations": provider_tools}
+            )
+        
+        return response, self._parse_tool_calls(response), self._extract_text(response)
+    
+    def _parse_tool_calls(self, response: Any) -> List[ToolCall]:
+        """Parse tool calls from the LLM response"""
+        tool_calls = []
+        
+        if self.provider == Provider.ANTHROPIC:
+            try:
+                for content_item in response.get("content", []):
+                    if content_item.get("type") == "tool_use":
+                        tool_calls.append(ToolCall(
+                            id=content_item.get("id", f"tool_{len(tool_calls)}"),
+                            name=content_item.get("name", "unknown"),
+                            arguments=content_item.get("input", {})
+                        ))
+            except Exception as e:
+                print(f"Error parsing Anthropic tool calls: {e}")
+                
+        elif self.provider == Provider.OPENAI:
+            try:
+                for choice in response.choices:
+                    if hasattr(choice.message, "tool_calls") and choice.message.tool_calls:
+                        for call in choice.message.tool_calls:
+                            import json
+                            tool_calls.append(ToolCall(
+                                id=call.id,
+                                name=call.function.name,
+                                arguments=json.loads(call.function.arguments)
+                            ))
+            except Exception as e:
+                print(f"Error parsing OpenAI tool calls: {e}")
+                        
+        elif self.provider == Provider.GOOGLE:
+            try:
+                # For Gemini, check for function calls in the response
+                if hasattr(response, "candidates"):
+                    for candidate in response.candidates:
+                        if hasattr(candidate, "content") and candidate.content:
+                            for part in candidate.content.parts:
+                                if hasattr(part, "function_call") and part.function_call:
+                                    # Only process if function_call exists and has a name
+                                    if hasattr(part.function_call, "name") and part.function_call.name:
+                                        args = {}
+                                        if hasattr(part.function_call, "args") and part.function_call.args is not None:
+                                            # Convert args to a dictionary
+                                            try:
+                                                # Handle either direct args or items method
+                                                if hasattr(part.function_call.args, "items"):
+                                                    for key, value in part.function_call.args.items():
+                                                        args[key] = str(value)
+                                                else:
+                                                    # Try to handle as a single value
+                                                    args = {"argument": str(part.function_call.args)}
+                                            except:
+                                                pass
+                                        
+                                        # Create a tool call object
+                                        tool_calls.append(ToolCall(
+                                            id=f"call_{len(tool_calls)}",
+                                            name=part.function_call.name,
+                                            arguments=args
+                                        ))
+                                    
+            except Exception as e:
+                print(f"Error parsing Google tool calls: {e}")
+                import traceback
+                print(traceback.format_exc())
+        
+        # Debug output
+        print(f"Found {len(tool_calls)} tool calls")
+        for call in tool_calls:
+            print(f"Tool call: {call.name}, args: {call.arguments}")
+        
+        return tool_calls
+    
+    def _extract_text(self, response: Any) -> str:
+        """Extract text from the LLM response"""
+        if self.provider == Provider.ANTHROPIC:
+            text_parts = []
+            for item in response.get("content", []):
+                if item.get("type") == "text":
+                    text_parts.append(item.get("text", ""))
+            return "\n".join(text_parts)
+            
+        elif self.provider == Provider.OPENAI:
+            return response.choices[0].message.content or ""
+            
+        elif self.provider == Provider.GOOGLE:
+            try:
+                # Try directly accessing text property
+                if hasattr(response, "text"):
+                    return response.text
+                
+                # Try extracting from candidates
+                if hasattr(response, "candidates") and response.candidates:
+                    text_parts = []
+                    for candidate in response.candidates:
+                        if hasattr(candidate, "content") and candidate.content:
+                            for part in candidate.content.parts:
+                                if hasattr(part, "text") and part.text:
+                                    text_parts.append(part.text)
+                    if text_parts:
+                        return "\n".join(text_parts)
+            except:
+                pass
+            
+            return ""
 
 class PokemonGameController:
     def __init__(self, config_path='config.json'):
@@ -19,34 +390,46 @@ class PokemonGameController:
         self._cleanup_done = False
         self._cleanup_lock = threading.Lock()
         
-        # Load configuration with environment variable support
+        # Load configuration
         self.config = load_config(config_path)
         if not self.config:
             print(f"Failed to load config from {config_path}")
             sys.exit(1)
         
-        # Set up LLM provider instead of directly using Gemini
-        self.llm = get_llm_provider(self.config)
-        if not self.llm:
-            print("Error: Failed to initialize LLM provider")
-            sys.exit(1)
-            
+        # Get the LLM provider details
+        provider_name = self.config.get("llm_provider", "anthropic").lower()
+        provider = Provider(provider_name)
+        provider_config = self.config["providers"][provider_name]
+        
+        # Create LLM client
+        self.llm = LLMControlClient(
+            provider=provider,
+            api_key=provider_config["api_key"],
+            model_name=provider_config["model_name"],
+            max_tokens=provider_config.get("max_tokens", 1024)
+        )
+        
         # Store the provider name for use in prompts
-        self.provider_name = self.llm.get_provider_name()
+        self.provider_name = provider_name
         
         # Initialize socket server
         self.server_socket = None
         
+        # Define tools
+        self.tools = PokemonGameTools.define_tools()
+        
         # Game state variables
         self.notepad_path = self.config['notepad_path']
         self.screenshot_path = self.config['screenshot_path']
-        self.thinking_history_path = os.path.join(os.path.dirname(self.notepad_path), 'thinking_history.txt')
         self.current_client = None
         self.running = True
         self.last_decision_time = 0
         self.decision_cooldown = self.config['decision_cooldown']
         self.client_threads = []
         self.debug_mode = self.config.get('debug_mode', False)
+        
+        # Short-term memory for recent actions (last 10 actions)
+        self.recent_actions = deque(maxlen=10)
         
         # Create directories if they don't exist
         os.makedirs(os.path.dirname(self.notepad_path), exist_ok=True)
@@ -55,15 +438,12 @@ class PokemonGameController:
         # Initialize the logger
         self.logger = PokemonLogger(debug_mode=self.debug_mode)
         
-        # Initialize notepad and thinking history if they don't exist
+        # Initialize notepad if it doesn't exist
         self.initialize_notepad()
-        self.initialize_thinking_history()
         
         self.logger.info("Controller initialized")
         self.logger.debug(f"LLM Provider: {self.provider_name}")
-        self.logger.debug(f"Model: {self.llm.get_model_name()}")
         self.logger.debug(f"Notepad path: {self.notepad_path}")
-        self.logger.debug(f"Thinking history path: {self.thinking_history_path}")
         self.logger.debug(f"Screenshot path: {self.screenshot_path}")
         
         # Set up the socket after logger is initialized
@@ -87,7 +467,6 @@ class PokemonGameController:
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             
             # Try to set TCP keepalive options if available
-            # These options might not be available on all platforms
             try:
                 # TCP Keepalive options: time, interval, retries
                 self.server_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
@@ -150,8 +529,6 @@ class PokemonGameController:
             # Give time to shut down (fixes the timeout warning)
             time.sleep(0.5)
 
-    # Config loading is now handled by the config_loader module
-
     def initialize_notepad(self):
         """Initialize the notepad file with a clearer structure"""
         if not os.path.exists(self.notepad_path):
@@ -165,15 +542,6 @@ class PokemonGameController:
                 f.write("## Game Progress\n")
                 f.write("- Beginning journey\n\n")
 
-    def initialize_thinking_history(self):
-        """Initialize the thinking history file if it doesn't exist"""
-        if not os.path.exists(self.thinking_history_path):
-            os.makedirs(os.path.dirname(self.thinking_history_path), exist_ok=True)
-            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-            with open(self.thinking_history_path, 'w') as f:
-                f.write(f"# Pokémon Game AI Thinking History\n\n")
-                f.write(f"Started: {timestamp}\n\n")
-
     def read_notepad(self):
         """Read the current notepad content"""
         try:
@@ -183,109 +551,105 @@ class PokemonGameController:
             print(f"Error reading notepad: {e}")
             return "Error reading notepad"
 
-    def read_thinking_history(self):
-        """Read the current thinking history content"""
-        try:
-            with open(self.thinking_history_path, 'r') as f:
-                return f.read()
-        except Exception as e:
-            print(f"Error reading thinking history: {e}")
-            return "Error reading thinking history"
-
     def update_notepad(self, new_content):
-        """Update the notepad with new content"""
+        """Update the notepad with new content or append to it"""
         try:
-            with open(self.notepad_path, 'w') as f:
-                f.write(new_content)
-            print("Notepad updated")
-        except Exception as e:
-            print(f"Error updating notepad: {e}")
-
-    def update_thinking_history(self, new_thinking):
-        """Update the thinking history with new content"""
-        try:
+            # Get current content
+            current_content = self.read_notepad()
+            
+            # Add timestamp and append the new content
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            updated_content = current_content + f"\n## Update {timestamp}\n{new_content}\n"
             
-            # Get existing history, but limit to recent entries if too large
-            history_content = self.read_thinking_history()
+            # Write the updated content
+            with open(self.notepad_path, 'w') as f:
+                f.write(updated_content)
             
-            # If history gets too long, keep only the most recent entries
-            max_chars = self.config['thinking_history_max_chars']
-            keep_entries = self.config['thinking_history_keep_entries']
+            self.logger.debug("Notepad updated")
             
-            if len(history_content) > max_chars:
-                # Split by timestamps and keep only the most recent ones
-                entries = history_content.split("## Thinking")
-                # Keep header and last N entries based on config
-                if len(entries) > keep_entries + 1:  # +1 for the header
-                    history_content = entries[0] + "".join(entries[-(keep_entries):])
-                    self.logger.debug(f"Trimmed thinking history to {keep_entries} entries")
-            
-            # Add new thinking with timestamp
-            with open(self.thinking_history_path, 'w') as f:
-                f.write(history_content)
-                f.write(f"\n## Thinking {timestamp}\n{new_thinking}\n")
-            
-            self.logger.debug("Thinking history updated")
+            # Check if notepad is getting too large
+            if len(updated_content) > 10000:
+                self.summarize_notepad()
+                
         except Exception as e:
-            print(f"Error updating thinking history: {e}")
+            self.logger.error(f"Error updating notepad: {e}")
 
-    def summarize_notepad_if_needed(self):
-        """Summarize notepad if it gets too long, keeping the structure intact"""
-        notepad_content = self.read_notepad()
-        
-        # If notepad is over 10KB, ask LLM to summarize it
-        if len(notepad_content) > 10000:
-            print("Notepad is getting too long, summarizing...")
+    def summarize_notepad(self):
+        """Summarize the notepad when it gets too long"""
+        try:
+            self.logger.info("Notepad is getting large, summarizing...")
             
-            try:
-                summarize_prompt = """
-                Please summarize the following game notes into a more concise format.
+            # Get the current notepad content
+            notepad_content = self.read_notepad()
+            
+            # Create a summarization prompt
+            summarize_prompt = """
+            Please summarize the following game notes into a more concise format.
+            
+            Maintain these key sections:
+            - Current Status
+            - Game Progress
+            - Important Items
+            - Pokemon Team
+            
+            Remove redundant information while preserving all important game state details.
+            Format the response as a well-structured markdown document.
+            
+            Here are the notes to summarize:
+            
+            """
+            
+            # No tools needed for summarization
+            empty_tools = []
+            
+            # Call the LLM to summarize
+            response, _, text = self.llm.call_with_tools(
+                message=summarize_prompt + notepad_content,
+                tools=empty_tools
+            )
+            
+            if text:
+                # Add a timestamp to the summarized content
+                timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                summary = f"# Pokémon Game AI Notepad (Summarized)\n\n"
+                summary += f"Last summarized: {timestamp}\n\n"
+                summary += text
                 
-                Maintain these exact sections:
-                - Long-term Goals
-                - Current Objectives 
-                - Team Status
-                - Inventory
-                - Game Progress
+                # Write the summarized content back to the notepad
+                with open(self.notepad_path, 'w') as f:
+                    f.write(summary)
                 
-                Condense repetitive information but preserve all important game state details:
-                - Current location and next destination
-                - All Pokémon on the team with their levels, types and moves
-                - Important items in the inventory
-                - Badges collected and significant events
-                - Current strategy and immediate plans
-                
-                Format the response as a well-structured markdown document with clear headings and bullet points.
-                
-                Here are the notes to summarize:
-                
-                """
-                
-                # Use our provider-agnostic interface
-                response_text = self.llm.generate_content(summarize_prompt + notepad_content)
-                
-                if response_text:
-                    # Add a note about summarization
-                    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-                    response_text += f"\n\n## Note\nNotepad was summarized at {timestamp} to reduce size while preserving important information."
-                    
-                    self.update_notepad(response_text)
-                    print("Notepad summarized successfully")
-            except Exception as e:
-                print(f"Error summarizing notepad: {e}")
+                self.logger.success("Notepad summarized successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Error summarizing notepad: {e}")
+
+    def get_recent_actions_text(self):
+        """Get formatted text of recent actions for short-term memory"""
+        if not self.recent_actions:
+            return "No recent actions."
+            
+        # Format recent actions chronologically, newest last
+        recent_actions_text = "Your recent actions:\n"
+        for i, action in enumerate(self.recent_actions, 1):
+            recent_actions_text += f"{i}. {action}\n"
+            
+        return recent_actions_text
 
     def process_screenshot(self, screenshot_path=None):
+        """Process a screenshot - with short-term memory of actions"""
         current_time = time.time()
         
         # Check cooldown
         if current_time - self.last_decision_time < self.decision_cooldown:
             return None
-                
+            
         try:
-            # Read game state data
+            # Read game state data (long-term memory)
             notepad_content = self.read_notepad()
-            thinking_history = self.read_thinking_history()
+            
+            # Get recent actions (short-term memory)
+            recent_actions = self.get_recent_actions_text()
             
             # Use provided path or default
             path_to_use = screenshot_path if screenshot_path else self.screenshot_path
@@ -301,70 +665,84 @@ class PokemonGameController:
                 self.logger.error(f"Error opening screenshot: {e}")
                 return None
             
+            # Prompt with both short-term and long-term memory
             prompt = f"""
-                You are {self.provider_name}, an AI playing Pokémon Red. Look at the screenshot and make decisions to progress in the game.
-                
-                ## Game Context
-                - You are playing Pokémon Red for Game Boy
-                
-                ## Your notepad (your memory):
-                {notepad_content}
-                
-                ## Your recent thinking:
-                {thinking_history}
-                
-                ## Controls Available:
-                - A: Confirm/Select/Interact/Talk/Read text
-                - B: Cancel/Back/Exit menu
-                - START: Open menu
-                - UP, DOWN, LEFT, RIGHT: Move/Navigate
-                
-                ## Important Tips:
-                - In dialogs, press A to advance text
-                - To talk to people, stand in front of them and press A
-                - To enter doors, stand in front of them and press A
-                - Pay close attention to any text on screen for clues
-                
-                ## Your task:
-                1. Analyze the current game state in the screenshot
-                2. Choose ONE button to progress in the game
-                
-                Respond in this exact format:
-                THINK: [Detailed analysis of what you see and what you should do]
-                BUTTON: [single button name (A, B, START, UP, DOWN, LEFT, RIGHT)]
-                NOTEPAD: [one of: "no change" OR specific information to add]
-                """
+            You are playing Pokémon Red. Look at this screenshot and choose ONE button to press.
             
-            # Send only current image
+            ## Controls:
+            - A: To confirm, select, talk, or advance text
+            - B: To cancel or go back
+            - UP, DOWN, LEFT, RIGHT: To move or navigate menus
+            - START: To open the main menu
+            - SELECT: Rarely used special function
+            
+            ## Short-term Memory (Recent Actions):
+            {recent_actions}
+            
+            ## Long-term Memory (Game State):
+            {notepad_content}
+            
+            Choose the appropriate button for this situation and use the press_button function to execute it.
+            """
+            
+            # Send the image with the prompt
             images = [current_image]
             
             # Log that we're requesting a decision
             self.logger.section(f"Requesting decision from {self.provider_name}")
             
-            # Get response from AI
-            response_text = self.llm.generate_content(prompt, images)
+            # Get response from AI with tools
+            response, tool_calls, text = self.llm.call_with_tools(
+                message=prompt,
+                tools=self.tools,
+                images=images
+            )
             
-            if response_text:
-                button_press, notepad_update, thinking = self.parse_llm_response(response_text)
-                self.last_decision_time = current_time
+            # Display the raw text response for debugging
+            print(f"LLM Text Response: {text}")
+            
+            # Look for button press tool calls
+            button_code = None
+            
+            for call in tool_calls:
+                # Handle notepad updates (long-term memory)
+                if call.name == "update_notepad":
+                    content = call.arguments.get("content", "")
+                    if content:
+                        self.update_notepad(content)
+                        print(f"Updated notepad with: {content[:50]}...")
                 
-                # Handle the AI's response
-                if button_press is not None:
-                    button_names = {0: "A", 1: "B", 2: "SELECT", 3: "START", 
-                                4: "RIGHT", 5: "LEFT", 6: "UP", 7: "DOWN",
-                                8: "R", 9: "L"}
-                    button_name = button_names.get(button_press, "UNKNOWN")
+                # Look for button presses
+                elif call.name == "press_button":
+                    button = call.arguments.get("button", "").upper()
+                    button_map = {
+                        "A": 0, "B": 1, "SELECT": 2, "START": 3,
+                        "RIGHT": 4, "LEFT": 5, "UP": 6, "DOWN": 7,
+                        "R": 8, "L": 9
+                    }
                     
-                    # Log AI's thinking and action using the logger methods
-                    if thinking:
-                        self.logger.ai_thinking(thinking)
-                    
-                    self.logger.ai_action(button_name, button_press)
-                
-                return {
-                    'button': button_press,
-                    'notepad_update': notepad_update
-                }
+                    if button in button_map:
+                        button_code = button_map[button]
+                        self.logger.success(f"Tool used button: {button}")
+                        
+                        # Add to short-term memory
+                        timestamp = time.strftime("%H:%M:%S")
+                        memory_entry = f"[{timestamp}] Pressed {button}"
+                        self.recent_actions.append(memory_entry)
+                        
+                        # Log the action
+                        self.logger.ai_action(button, button_code)
+                        
+                        # Update decision time
+                        self.last_decision_time = current_time
+                        
+                        # Return the decision - no fallback if not found
+                        return {'button': button_code}
+            
+            # If no button press tool was used, just log and return None
+            if button_code is None:
+                self.logger.warning("No press_button tool call found!")
+                return None
             
         except Exception as e:
             self.logger.error(f"Error processing screenshot: {e}")
@@ -373,60 +751,6 @@ class PokemonGameController:
                 self.logger.debug(traceback.format_exc())
         
         return None
-
-    def parse_llm_response(self, response_text):
-        """Parse the LLM response to extract button press, notepad update and thinking"""
-        button_press = None
-        notepad_update = None
-        thinking = None
-        
-        # Button mapping
-        button_map = {
-            "A": 0, "B": 1, "SELECT": 2, "START": 3,
-            "RIGHT": 4, "LEFT": 5, "UP": 6, "DOWN": 7,
-            "R": 8, "L": 9
-        }
-        
-        # Find each section
-        think_match = re.search(r"THINK:\s*(.*?)(?=BUTTON:|$)", response_text, re.DOTALL)
-        button_match = re.search(r"BUTTON:\s*(.*?)(?=NOTEPAD:|$)", response_text, re.DOTALL)
-        notepad_match = re.search(r"NOTEPAD:\s*(.*?)$", response_text, re.DOTALL)
-        
-        # Extract thinking
-        if think_match:
-            thinking = think_match.group(1).strip()
-            # Save thinking to history
-            self.update_thinking_history(thinking)
-            
-        # Extract button press
-        if button_match:
-            button_value = button_match.group(1).strip().upper()
-            if button_value in button_map:
-                button_press = button_map[button_value]
-            else:
-                # Default to A if invalid button
-                button_press = 0
-                self.logger.warning(f"Invalid button '{button_value}', defaulting to A (0)")
-        
-        # Extract notepad update
-        if notepad_match:
-            notepad_content = notepad_match.group(1).strip()
-            if notepad_content.lower() != "no change":
-                # Create more meaningful updates by filtering repetitive content
-                # Remove phrases that just talk about pressing buttons
-                filtered_content = re.sub(r"I (will|am going to|should) press [A-Z]+ to.*?\.", "", notepad_content)
-                filtered_content = re.sub(r"I (will|should|am going to|need to) (select|choose|pick).*?\.", "", filtered_content)
-                filtered_content = filtered_content.strip()
-                
-                if filtered_content:
-                    # Add timestamp to notepad entries
-                    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-                    
-                    # Add to existing notepad with timestamp
-                    current_notepad = self.read_notepad()
-                    notepad_update = current_notepad + f"\n## Update {timestamp}\n{filtered_content}\n"
-        
-        return button_press, notepad_update, thinking
 
     def handle_client(self, client_socket, client_address):
         """Handle communication with the emulator client"""
@@ -456,22 +780,21 @@ class PokemonGameController:
                         
                         # Verify the file exists
                         if os.path.exists(content):
+                            # Process the screenshot - no fallbacks
                             decision = self.process_screenshot(content)
                             
-                            if decision:
-                                # Send button press to emulator
-                                if decision['button'] is not None and self.running:
-                                    try:
-                                        client_socket.send(str(decision['button']).encode('utf-8') + b'\n')
-                                        self.logger.success("Button command sent to emulator")
-                                    except:
-                                        self.logger.error("Failed to send button command")
-                                        break
-                                
-                                # Update notepad if needed
-                                if decision['notepad_update']:
-                                    self.update_notepad(decision['notepad_update'])
-                                    self.summarize_notepad_if_needed()
+                            if decision and decision.get('button') is not None:
+                                # Only send button press if one was specified by a tool
+                                try:
+                                    button_code = str(decision['button'])
+                                    self.logger.debug(f"Sending button code to emulator: {button_code}")
+                                    client_socket.send(button_code.encode('utf-8') + b'\n')
+                                    self.logger.success("Button command sent to emulator")
+                                except Exception as e:
+                                    self.logger.error(f"Failed to send button command: {e}")
+                                    break
+                            else:
+                                self.logger.warning("No button press in decision - waiting for next screenshot")
                         else:
                             self.logger.error(f"Screenshot file not found at {content}")
                 
@@ -512,34 +835,6 @@ class PokemonGameController:
             # Remove client from our tracking
             if self.current_client == client_socket:
                 self.current_client = None
-
-    def log_debug(self, message):
-        """Log debug messages if debug mode is enabled"""
-        if self.debug_mode:
-            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-            print(f"[DEBUG {timestamp}] {message}")
-    
-    def extract_game_info(self, screenshot_path):
-        """
-        Extract useful game information from screenshots
-        This could be expanded with OCR or more advanced CV techniques
-        """
-        try:
-            # This is a placeholder for future OCR/CV improvements
-            # We could use OCR to extract text from the game screen
-            # For now, we'll just return the basic file info
-            if os.path.exists(screenshot_path):
-                file_size = os.path.getsize(screenshot_path)
-                timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-                return {
-                    "timestamp": timestamp,
-                    "file_size": file_size,
-                    "path": screenshot_path
-                }
-            return None
-        except Exception as e:
-            print(f"Error extracting game info: {e}")
-            return None
 
     def start(self):
         """Start the controller server with improved connection handling"""

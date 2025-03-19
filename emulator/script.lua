@@ -3,12 +3,12 @@
 -- Socket setup for communication with Python controller
 statusSocket     = nil
 lastScreenshotTime = 0
-screenshotInterval = 3  -- Capture screenshots every 3 seconds
+screenshotInterval = 5  -- Capture screenshots every 3 seconds
 
 -- Global variables for key press tracking
 local currentKeyIndex = nil
 local keyPressStartFrame = 0
-local keyPressFrames = 1   -- Hold keys for 1 frames
+local keyPressFrames = 5   -- Hold keys for 5 frames
 
 -- Path settings with absolute path
 local screenshotPath = "/Users/alex/Documents/LLM-Pokemon-Red-Benchmark/data/screenshots/screenshot.png"
