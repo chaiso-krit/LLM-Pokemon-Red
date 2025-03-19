@@ -99,7 +99,7 @@ def main():
     """Main function to launch all components"""
     parser = argparse.ArgumentParser(description="Launch Pokémon Red AI Player")
     parser.add_argument("--config", default="config.json", help="Path to config file")
-    parser.add_argument("--rom", default="pokemon-red.gba", help="Path to Pokémon ROM file")
+    parser.add_argument("--rom", default="pokemon-red.gb", help="Path to Pokémon ROM file")
     parser.add_argument("--emulator", default="/Applications/mGBA.app/Contents/MacOS/mGBA", 
                        help="Path to emulator executable")
     parser.add_argument("--provider", choices=["gemini", "openai", "anthropic"], 

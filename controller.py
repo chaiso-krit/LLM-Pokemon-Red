@@ -302,10 +302,10 @@ class PokemonGameController:
                 return None
             
             prompt = f"""
-                You are {self.provider_name}, an AI playing Pokémon Fire Red. Look at the screenshot and make decisions to progress in the game.
+                You are {self.provider_name}, an AI playing Pokémon Red. Look at the screenshot and make decisions to progress in the game.
                 
                 ## Game Context
-                - You are playing Pokémon Fire Red for Game Boy Advance
+                - You are playing Pokémon Red for Game Boy
                 
                 ## Your notepad (your memory):
                 {notepad_content}
