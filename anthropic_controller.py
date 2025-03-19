@@ -8,27 +8,29 @@ import signal
 import sys
 import atexit
 import argparse
+import requests
 import json
+import base64
+from io import BytesIO
 from collections import deque
 from typing import Dict, List, Any, Tuple
-
 # Import from your existing modules
 from pokemon_logger import PokemonLogger
 from config_loader import load_config
 
 class Tool:
-    """Simple class to define a tool for Gemini"""
+    """Simple class to define a tool for Anthropic Claude"""
     def __init__(self, name: str, description: str, parameters: List[Dict[str, Any]]):
         self.name = name
         self.description = description
         self.parameters = parameters
     
-    def to_gemini_format(self) -> Dict[str, Any]:
-        """Convert to Gemini's expected format"""
+    def to_anthropic_format(self) -> Dict[str, Any]:
+        """Convert to Anthropic's expected format"""
         return {
             "name": self.name,
             "description": self.description,
-            "parameters": {
+            "input_schema": {
                 "type": "object",
                 "properties": {
                     p["name"]: {
@@ -41,14 +43,14 @@ class Tool:
         }
 
 class ToolCall:
-    """Represents a tool call from Gemini"""
+    """Represents a tool call from Anthropic"""
     def __init__(self, id: str, name: str, arguments: Dict[str, Any]):
         self.id = id
         self.name = name
         self.arguments = arguments
 
-class GeminiClient:
-    """Client specifically for communicating with Gemini"""
+class AnthropicClient:
+    """Client specifically for communicating with Anthropic Claude"""
     def __init__(self, api_key: str, model_name: str, max_tokens: int = 1024):
         self.api_key = api_key
         self.model_name = model_name
@@ -56,116 +58,106 @@ class GeminiClient:
         self._setup_client()
     
     def _setup_client(self):
-        """Set up the Gemini client"""
-        import google.generativeai as genai
-        genai.configure(api_key=self.api_key)
-        self.client = genai
+        """Set up the Anthropic API endpoints"""
+        self.api_url = "https://api.anthropic.com/v1/messages"
+        self.headers = {
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+        }
     
     def call_with_tools(self, message: str, tools: List[Tool], images: List[PIL.Image.Image] = None) -> Tuple[Any, List[ToolCall], str]:
         """
-        Call Gemini with the given message and tools, optionally including images
+        Call Anthropic Claude with the given message and tools, optionally including images
         """
-        import google.generativeai as genai
+        provider_tools = [tool.to_anthropic_format() for tool in tools]
         
-        provider_tools = [tool.to_gemini_format() for tool in tools]
-        
-        model = self.client.GenerativeModel(model_name=self.model_name)
-        
-        system_message = """
-        You are playing Pokémon Red. Your job is to press buttons to control the game.
-        
-        IMPORTANT: After analyzing the screenshot, you MUST use the press_button function.
-        You are REQUIRED to use the press_button function with every response.
-        
-        NEVER just say what button to press - ALWAYS use the press_button function to actually press it.
-        """
-        
-        chat = model.start_chat(
-            history=[
-                {"role": "user", "parts": [system_message]},
-                {"role": "model", "parts": ["I understand. For every screenshot, I will use the press_button function to specify which button to press (A, B, UP, DOWN, etc.)."]}
-            ]
-        )
-        
-        enhanced_message = f"{message}\n\nIMPORTANT: You MUST use the press_button function. Select which button to press (A, B, UP, DOWN, LEFT, RIGHT, START or SELECT)."
-        
-        content_parts = [enhanced_message]
+        # Handle images for Claude
+        content = [{"type": "text", "text": message}]
         
         if images:
             for image in images:
-                content_parts.append(image)
+                buffer = BytesIO()
+                image.save(buffer, format="PNG")
+                base64_image = base64.b64encode(buffer.getvalue()).decode("utf-8")
+                
+                content.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": base64_image
+                    }
+                })
         
-        response = chat.send_message(
-            content=content_parts,
-            generation_config={
-                "max_output_tokens": self.max_tokens,
-                "temperature": 0.2,
-                "top_p": 0.95,
-                "top_k": 0
-            },
-            tools={"function_declarations": provider_tools}
-        )
+        system = """
+        You are an AI playing Pokémon Red. Your ONLY job is to press buttons to control the game.
+        
+        IMPORTANT: You MUST use the press_button function to specify which button to press.
+        
+        Always select the appropriate button based on the context: 
+        - A: To confirm, advance text, or select
+        - B: To cancel or go back
+        - Directional buttons: To navigate
+        - START: To open the menu
+        
+        If you need to add important information to the long-term memory, use update_notepad.
+        """
+        
+        response = requests.post(
+            self.api_url,
+            headers=self.headers,
+            json={
+                "model": self.model_name,
+                "max_tokens": self.max_tokens,
+                "messages": [{"role": "user", "content": content}],
+                "system": system,
+                "tools": provider_tools
+            }
+        ).json()
         
         return response, self._parse_tool_calls(response), self._extract_text(response)
     
     def _parse_tool_calls(self, response: Any) -> List[ToolCall]:
-        """Parse tool calls from Gemini's response"""
+        """Parse tool calls from Anthropic Claude's response"""
         tool_calls = []
         
         try:
-            if hasattr(response, "candidates"):
-                for candidate in response.candidates:
-                    if hasattr(candidate, "content") and candidate.content:
-                        for part in candidate.content.parts:
-                            if hasattr(part, "function_call") and part.function_call:
-                                if hasattr(part.function_call, "name") and part.function_call.name:
-                                    args = {}
-                                    if hasattr(part.function_call, "args") and part.function_call.args is not None:
-                                        try:
-                                            if hasattr(part.function_call.args, "items"):
-                                                for key, value in part.function_call.args.items():
-                                                    args[key] = str(value)
-                                            else:
-                                                args = {"argument": str(part.function_call.args)}
-                                        except:
-                                            pass
-                                    
-                                    tool_calls.append(ToolCall(
-                                        id=f"call_{len(tool_calls)}",
-                                        name=part.function_call.name,
-                                        arguments=args
-                                    ))
+            # Check if content is in the response
+            if "content" in response:
+                for content_item in response.get("content", []):
+                    if content_item.get("type") == "tool_use":
+                        tool_calls.append(ToolCall(
+                            id=content_item.get("id", f"tool_{len(tool_calls)}"),
+                            name=content_item.get("name", "unknown"),
+                            arguments=content_item.get("input", {})
+                        ))
         except Exception as e:
-            print(f"Error parsing Gemini tool calls: {e}")
-            import traceback
-            print(traceback.format_exc())
+            print(f"Error parsing Anthropic tool calls: {e}")
         
-        print(f"Found {len(tool_calls)} tool calls")
         for call in tool_calls:
             print(f"Tool call: {call.name}, args: {call.arguments}")
         
         return tool_calls
     
     def _extract_text(self, response: Any) -> str:
-        """Extract text from the Gemini response"""
+        """Extract text from the Anthropic Claude response"""
         try:
-            if hasattr(response, "text"):
-                return response.text
-            if hasattr(response, "candidates") and response.candidates:
+            if "content" in response:
                 text_parts = []
-                for candidate in response.candidates:
-                    if hasattr(candidate, "content") and candidate.content:
-                        for part in candidate.content.parts:
-                            if hasattr(part, "text") and part.text:
-                                text_parts.append(part.text)
+                for item in response.get("content", []):
+                    if item.get("type") == "text":
+                        text_parts.append(item.get("text", ""))
                 if text_parts:
                     return "\n".join(text_parts)
-        except:
-            pass
-        
-        return ""
+            
+            # If we can't find any text, just return empty string
+            return ""
+        except Exception as e:
+            print(f"Error extracting text: {e}")
+            return ""
 
-class GeminiPokemonController:
+class AnthropicPokemonController:
     def __init__(self, config_path='config.json'):
         self._cleanup_done = False
         self._cleanup_lock = threading.Lock()
@@ -175,9 +167,9 @@ class GeminiPokemonController:
             print(f"Failed to load config from {config_path}")
             sys.exit(1)
         
-        provider_config = self.config["providers"]["google"]
+        provider_config = self.config["providers"]["anthropic"]
         
-        self.gemini = GeminiClient(
+        self.anthropic = AnthropicClient(
             api_key=provider_config["api_key"],
             model_name=provider_config["model_name"],
             max_tokens=provider_config.get("max_tokens", 1024)
@@ -195,8 +187,8 @@ class GeminiPokemonController:
         self.client_threads = []
         self.debug_mode = self.config.get('debug_mode', False)
         
-        # Modified: Store timestamp, button, and full reasoning text
-        self.recent_actions = deque(maxlen=10)  # Now stores (timestamp, button, reasoning)
+        # Store timestamp, button, and full reasoning text
+        self.recent_actions = deque(maxlen=10)
         
         os.makedirs(os.path.dirname(self.notepad_path), exist_ok=True)
         os.makedirs(os.path.dirname(self.screenshot_path), exist_ok=True)
@@ -300,15 +292,18 @@ class GeminiPokemonController:
             time.sleep(0.5)
 
     def initialize_notepad(self):
-        """Initialize the notepad file"""
+        """Initialize the notepad file with clear game objectives"""
         if not os.path.exists(self.notepad_path):
             os.makedirs(os.path.dirname(self.notepad_path), exist_ok=True)
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
             with open(self.notepad_path, 'w') as f:
-                f.write("# Pokémon Game AI Notepad\n\n")
+                f.write("# Pokémon Red Game Progress\n\n")
                 f.write(f"Game started: {timestamp}\n\n")
-                f.write("## Current Status\n- Game just started\n\n")
-                f.write("## Game Progress\n- Beginning journey\n\n")
+                f.write("## Current Objectives\n- Find Professor Oak to get first Pokémon\n- Start Pokémon journey\n\n")
+                f.write("## Current Location\n- Starting in player's house in Pallet Town\n\n")
+                f.write("## Game Progress\n- Just beginning the adventure\n\n")
+                f.write("## Items\n- None yet\n\n")
+                f.write("## Pokémon Team\n- None yet\n\n")
 
     def read_notepad(self):
         """Read the current notepad content"""
@@ -349,7 +344,7 @@ class GeminiPokemonController:
             Format the response as a well-structured markdown document.
             Here are the notes to summarize:
             """
-            response, _, text = self.gemini.call_with_tools(
+            response, _, text = self.anthropic.call_with_tools(
                 message=summarize_prompt + notepad_content,
                 tools=[]
             )
@@ -372,7 +367,8 @@ class GeminiPokemonController:
         recent_actions_text = "## Short-term Memory (Recent Actions and Reasoning):\n"
         for i, (timestamp, button, reasoning) in enumerate(self.recent_actions, 1):
             recent_actions_text += f"{i}. [{timestamp}] Pressed {button}\n"
-            recent_actions_text += f"   Reasoning: {reasoning.strip()}\n\n"
+            if reasoning.strip():
+                recent_actions_text += f"   Reasoning: {reasoning.strip()}\n\n"
         return recent_actions_text
 
     def process_screenshot(self, screenshot_path=None):
@@ -391,37 +387,62 @@ class GeminiPokemonController:
                 self.logger.error(f"Screenshot not found at {path_to_use}")
                 return None
             
-            current_image = PIL.Image.open(path_to_use)
+            # Load the original image
+            original_image = PIL.Image.open(path_to_use)
+            self.logger.debug(f"Original screenshot dimensions: {original_image.size[0]}x{original_image.size[1]}")
+            
+            # Resize the image to 3x larger for better visibility
+            scale_factor = 3
+            current_image = original_image.resize(
+                (original_image.size[0] * scale_factor, original_image.size[1] * scale_factor), 
+                PIL.Image.NEAREST
+            )
+            self.logger.debug(f"Resized screenshot dimensions: {current_image.size[0]}x{current_image.size[1]}")
             
             prompt = f"""
-            You are Gemini playing Pokémon Red, you are the character with the red hat. Look at this screenshot and choose ONE button to press.
-            
+            You are playing Pokémon Red. You control the character with the red hat. Look at this screenshot and choose ONE button to press.
+
+            ## POKÉMON GAME MECHANICS:
+            - You CANNOT enter buildings by pressing A - you must WALK to the door
+            - In Pokémon Red, you enter buildings by walking into doorways, not by pressing A
+            - To ENTER a door: Walk UP into the doorway
+            - To EXIT a building: Walk onto the red mat and press DOWN
+            - Professor Oak is NOT in your house - he's in his LAB elsewhere in town
+            - DO NOT go back into places you just came from
+
+            ## PALLET TOWN GEOGRAPHY:
+            - You are now in Pallet Town (outside)
+            - Professor Oak's lab is a larger building in town
+            - There are only a few buildings in Pallet Town
+            - EXPLORE by walking around town to find Oak's lab
+
             ## Controls:
-            - A: To confirm, select, talk, or advance text
+            - A: To talk to people or interact with objects (NOT for entering buildings)
             - B: To cancel or go back
-            - UP, DOWN, LEFT, RIGHT: To move or navigate menus
+            - UP, DOWN, LEFT, RIGHT: To move your character (use these to enter buildings)
             - START: To open the main menu
-            - SELECT: Rarely used special function
+            - SELECT: Rarely used
             
             {recent_actions}
             
             ## Long-term Memory (Game State):
             {notepad_content}
             
-            Choose the appropriate button for this situation and use the press_button function to execute it.
-            When you're in a room, house, or cave you must look for the exits via the ladders, stairs, or red mats on the floor and use them by walking directly over them.
+            IMPORTANT: Use update_notepad when you discover new areas or information.
+            
+            Choose the appropriate button and use the press_button function.
             """
             
             images = [current_image]
-            self.logger.section(f"Requesting decision from Gemini")
+            self.logger.section(f"Requesting decision from Anthropic")
             
-            response, tool_calls, text = self.gemini.call_with_tools(
+            response, tool_calls, text = self.anthropic.call_with_tools(
                 message=prompt,
                 tools=self.tools,
                 images=images
             )
             
-            print(f"Gemini Text Response: {text}")
+            print(f"Anthropic Text Response: {text}")
             
             button_code = None
             
@@ -444,7 +465,7 @@ class GeminiPokemonController:
                         button_code = button_map[button]
                         self.logger.success(f"Tool used button: {button}")
                         
-                        # Modified: Store timestamp, button, and full reasoning text
+                        # Store timestamp, button, and full reasoning text
                         timestamp = time.strftime("%H:%M:%S")
                         self.recent_actions.append((timestamp, button, text))
                         
@@ -536,7 +557,7 @@ class GeminiPokemonController:
 
     def start(self):
         """Start the controller server"""
-        self.logger.header(f"Starting Pokémon Game Controller with Gemini")
+        self.logger.header(f"Starting Pokémon Game Controller with Anthropic")
         
         try:
             while self.running:
@@ -583,11 +604,11 @@ class GeminiPokemonController:
             self.logger.success("Server shut down cleanly")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Gemini Pokémon Game AI Controller")
+    parser = argparse.ArgumentParser(description="Anthropic Claude Pokémon Game AI Controller")
     parser.add_argument("--config", "-c", default="config.json", help="Path to the configuration file")
     args = parser.parse_args()
     
-    controller = GeminiPokemonController(args.config)
+    controller = AnthropicPokemonController(args.config)
     try:
         controller.start()
     except KeyboardInterrupt:

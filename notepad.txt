@@ -1,3 +1,22 @@
-# Pokémon Red Game AI Notepad
-I am Gemini and I am playing Pokémon Red. I need to record important information here.
+# Pokémon Red Game Progress
+
+Game started: 2025-03-19 09:23:01
+
+## Current Objectives
+- Enter my name "Gemini" and give my rival a name.
+- Exit my house
+- Find Professor Oak to get first Pokémon
+- Start Pokémon journey
+
+## Current Location
+- Starting in player's house in Pallet Town
+
+## Game Progress
+- Just beginning the adventure
+
+## Items
+- None yet
+
+## Pokémon Team
+- None yet
 

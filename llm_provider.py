@@ -40,12 +40,12 @@ class LLMProvider(ABC):
         return self.config.get("model_name", "unknown model")
 
 
-class GeminiProvider(LLMProvider):
-    """Google's Gemini LLM provider implementation"""
+class GoogleProvider(LLMProvider):
+    """Google's google LLM provider implementation"""
     
     def __init__(self, config):
         super().__init__(config)
-        self.provider_name = "Gemini"
+        self.provider_name = "google"
         self.model = None
     
     def initialize(self):
@@ -55,14 +55,14 @@ class GeminiProvider(LLMProvider):
             self.model = genai.GenerativeModel(self.config["model_name"])
             return True
         except Exception as e:
-            print(f"Error initializing Gemini: {e}")
+            print(f"Error initializing google: {e}")
             return False
     
     def generate_content(self, prompt, images=None):
         try:
             if not self.model:
                 if not self.initialize():
-                    return "Error: Gemini model not initialized"
+                    return "Error: google model not initialized"
             
             # Prepare the content parts
             content_parts = [prompt]
@@ -80,10 +80,10 @@ class GeminiProvider(LLMProvider):
             
             if response:
                 return response.text
-            return "No response from Gemini"
+            return "No response from google"
             
         except Exception as e:
-            print(f"Error generating content with Gemini: {e}")
+            print(f"Error generating content with google: {e}")
             return f"Error: {str(e)}"
 
 
@@ -297,8 +297,8 @@ def get_llm_provider(config):
         print(f"Warning: No configuration found for provider '{provider_name}'")
         return None
     
-    if provider_name == "gemini":
-        return GeminiProvider(provider_config)
+    if provider_name == "google":
+        return GoogleProvider(provider_config)
     elif provider_name == "openai":
         return OpenAIProvider(provider_config)
     elif provider_name == "anthropic":
@@ -313,8 +313,8 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="Test LLM providers")
-    parser.add_argument("--provider", "-p", choices=["gemini", "openai", "anthropic"], 
-                        default="gemini", help="Provider to test")
+    parser.add_argument("--provider", "-p", choices=["google", "openai", "anthropic"], 
+                        default="google", help="Provider to test")
     parser.add_argument("--config", "-c", default="config.json", help="Config file path")
     parser.add_argument("--prompt", default="Say hello and confirm you're working", 
                         help="Test prompt")
