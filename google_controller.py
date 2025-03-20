@@ -430,6 +430,11 @@ class GeminiPokemonController:
             {notepad_content}
 
             IMPORTANT: After each significant change (entering new area, talking to someone, finding items), use the update_notepad function to record what you learned or where you are.
+
+            ## IMPORTANT INSTRUCTIONS:
+            1. FIRST, provide a SHORT paragraph (2-3 sentences) describing what you see in the screenshot.
+            2. THEN, provide a BRIEF explanation of what you plan to do and why.
+            3. FINALLY, use the press_button function to execute your decision.
             
             Choose the appropriate button for this situation and use the press_button function to execute it.
             When you're in a room, house, or cave you must look for the exits via the ladders, stairs, or red mats on the floor and use them by walking directly over them.
