@@ -194,8 +194,14 @@ class GeminiPokemonController:
         self.client_threads = []
         self.debug_mode = self.config.get('debug_mode', False)
         
-        # Modified: Store timestamp, button, and full reasoning text
-        self.recent_actions = deque(maxlen=10)  # Now stores (timestamp, button, reasoning)
+        # Game state tracking
+        self.player_direction = "UNKNOWN"
+        self.player_x = 0
+        self.player_y = 0
+        self.map_id = 0
+        
+        # Modified: Store timestamp, button, full reasoning text, and position/direction
+        self.recent_actions = deque(maxlen=10)
         
         os.makedirs(os.path.dirname(self.notepad_path), exist_ok=True)
         os.makedirs(os.path.dirname(self.screenshot_path), exist_ok=True)
@@ -369,18 +375,61 @@ class GeminiPokemonController:
             self.logger.error(f"Error summarizing notepad: {e}")
 
     def get_recent_actions_text(self):
-        """Get formatted text of recent actions with reasoning"""
+        """Get formatted text of recent actions with reasoning and position/direction"""
         if not self.recent_actions:
             return "No recent actions."
         
         recent_actions_text = "## Short-term Memory (Recent Actions and Reasoning):\n"
-        for i, (timestamp, button, reasoning) in enumerate(self.recent_actions, 1):
-            recent_actions_text += f"{i}. [{timestamp}] Pressed {button}\n"
+        for i, (timestamp, button, reasoning, direction, x, y, map_id) in enumerate(self.recent_actions, 1):
+            recent_actions_text += f"{i}. [{timestamp}] Pressed {button} while facing {direction} at position ({x}, {y}) on map {map_id}\n"
             recent_actions_text += f"   Reasoning: {reasoning.strip()}\n\n"
         return recent_actions_text
 
+    def get_direction_guidance_text(self):
+        """Generate guidance text about player orientation and interactions"""
+        directions = {
+            "UP": "north",
+            "DOWN": "south", 
+            "LEFT": "west",
+            "RIGHT": "east"
+        }
+        
+        facing_direction = directions.get(self.player_direction, self.player_direction)
+        
+        guidance = f"""
+        ## Navigation Tips:
+        - To INTERACT with objects or NPCs, you MUST be FACING them and then press A
+        - Your current direction is {self.player_direction} (facing {facing_direction})
+        - Your current position is (X={self.player_x}, Y={self.player_y}) on map {self.map_id}
+        - If you need to face a different direction, press the appropriate directional button first
+        - In buildings, look for exits via stairs, doors, or red mats and walk directly over them
+        """
+        
+        return guidance
+
+    def get_map_name(self, map_id):
+        """Get map name from ID, with fallback for unknown maps"""
+        # Pokémon Red/Blue map IDs (incomplete, add more as needed)
+        map_names = {
+            0: "Pallet Town",
+            1: "Viridian City",
+            2: "Pewter City",
+            3: "Cerulean City",
+            12: "Route 1",
+            13: "Route 2",
+            14: "Route 3",
+            15: "Route 4",
+            37: "Red's House 1F",
+            38: "Red's House 2F",
+            39: "Blue's House",
+            40: "Oak's Lab",
+            # Add more map IDs as you explore the game
+        }
+        
+        return map_names.get(map_id, f"Unknown Area (Map ID: {map_id})")
+
     def process_screenshot(self, screenshot_path=None):
-        """Process a screenshot with enhanced short-term memory"""
+        """Process a screenshot with enhanced game state information"""
         current_time = time.time()
         
         if current_time - self.last_decision_time < self.decision_cooldown:
@@ -389,6 +438,9 @@ class GeminiPokemonController:
         try:
             notepad_content = self.read_notepad()
             recent_actions = self.get_recent_actions_text()
+            direction_guidance = self.get_direction_guidance_text()
+            current_map = self.get_map_name(self.map_id)
+            
             path_to_use = screenshot_path if screenshot_path else self.screenshot_path
             
             if not os.path.exists(path_to_use):
@@ -397,18 +449,16 @@ class GeminiPokemonController:
             
             # Load the original image
             original_image = PIL.Image.open(path_to_use)
-            # self.logger.debug(f"Original screenshot dimensions: {original_image.size[0]}x{original_image.size[1]}")
-            
-            # Resize the image to 3x larger for better visibility
-            # scale_factor = 3
-            # current_image = original_image.resize(
-            #     (original_image.size[0] * scale_factor, original_image.size[1] * scale_factor), 
-            #     PIL.Image.NEAREST
-            # )
-            # self.logger.debug(f"Resized screenshot dimensions: {current_image.size[0]}x{current_image.size[1]}")
             
             prompt = f"""
             You are Gemini playing Pokémon Red, you are the character with the red hat. Look at this screenshot and choose ONE button to press.
+            
+            ## Current Location
+            You are in {current_map}
+            Position: X={self.player_x}, Y={self.player_y}
+            
+            ## Current Direction
+            You are facing: {self.player_direction}
             
             ## Controls:
             - A: To talk to people or interact with objects or advance text (NOT for entering/exiting buildings)
@@ -421,10 +471,12 @@ class GeminiPokemonController:
             - If you've pressed the same button 3+ times with no change, TRY A DIFFERENT DIRECTION
             - You must be DIRECTLY ON TOP of exits (red mats, doors, stairs) to use them
             - Light gray or black space is NOT walkable - it's a wall/boundary you need to use the exits (red mats, doors, stairs)
-            - The character must directly face objects to interact with them
-            - When you enter a new area or discover something important, UPDATE THE NOTEPAD using the update_notepad function to record what you learned, where you are and your current goal.
+            - To INTERACT with objects or NPCs, you MUST be FACING them and then press A
+            - When you enter a new area or discover something important, UPDATE THE NOTEPAD using the update_notepad function
             
             {recent_actions}
+            
+            {direction_guidance}
             
             ## Long-term Memory (Game State):
             {notepad_content}
@@ -435,9 +487,6 @@ class GeminiPokemonController:
             1. FIRST, provide a SHORT paragraph (2-3 sentences) describing what you see in the screenshot.
             2. THEN, provide a BRIEF explanation of what you plan to do and why.
             3. FINALLY, use the press_button function to execute your decision.
-            
-            Choose the appropriate button for this situation and use the press_button function to execute it.
-            When you're in a room, house, or cave you must look for the exits via the ladders, stairs, or red mats on the floor and use them by walking directly over them.
             """
             
             images = [original_image]
@@ -472,9 +521,12 @@ class GeminiPokemonController:
                         button_code = button_map[button]
                         self.logger.success(f"Tool used button: {button}")
                         
-                        # Modified: Store timestamp, button, and full reasoning text
+                        # Modified: Store timestamp, button, reasoning, and position/direction
                         timestamp = time.strftime("%H:%M:%S")
-                        self.recent_actions.append((timestamp, button, text))
+                        self.recent_actions.append(
+                            (timestamp, button, text, self.player_direction, 
+                             self.player_x, self.player_y, self.map_id)
+                        )
                         
                         self.logger.ai_action(button, button_code)
                         self.last_decision_time = current_time
@@ -509,12 +561,48 @@ class GeminiPokemonController:
                 
                 if len(parts) >= 2:
                     message_type = parts[0]
-                    content = parts[1]
+                    content = parts[1:]  # Get all remaining parts
                     
-                    if message_type == "screenshot":
-                        self.logger.game_state("Received new screenshot from emulator")
-                        if os.path.exists(content):
-                            decision = self.process_screenshot(content)
+                    # Handle the new screenshot_with_state message type
+                    if message_type == "screenshot_with_state":
+                        self.logger.game_state("Received new screenshot with game state from emulator")
+                        
+                        # Parse the content which now includes game state
+                        if len(content) >= 5:  # Path, direction, x, y, mapId
+                            screenshot_path = content[0]
+                            self.player_direction = content[1]
+                            self.player_x = int(content[2])
+                            self.player_y = int(content[3])
+                            self.map_id = int(content[4])
+                            
+                            self.logger.debug(f"Game State: Direction={self.player_direction}, " +
+                                             f"Position=({self.player_x}, {self.player_y}), " +
+                                             f"Map ID={self.map_id}")
+                        
+                            # Verify the file exists
+                            if os.path.exists(screenshot_path):
+                                # Process the screenshot with game state info
+                                decision = self.process_screenshot(screenshot_path)
+                                
+                                if decision and decision.get('button') is not None:
+                                    try:
+                                        button_code = str(decision['button'])
+                                        self.logger.debug(f"Sending button code to emulator: {button_code}")
+                                        client_socket.send(button_code.encode('utf-8') + b'\n')
+                                        self.logger.success("Button command sent to emulator")
+                                    except Exception as e:
+                                        self.logger.error(f"Failed to send button command: {e}")
+                                        break
+                            else:
+                                self.logger.error(f"Screenshot file not found at {screenshot_path}")
+                    
+                    # Maintain backward compatibility with the old format
+                    elif message_type == "screenshot":
+                        self.logger.game_state("Received legacy screenshot from emulator (no game state)")
+                        screenshot_path = content[0]
+                        
+                        if os.path.exists(screenshot_path):
+                            decision = self.process_screenshot(screenshot_path)
                             if decision and decision.get('button') is not None:
                                 try:
                                     button_code = str(decision['button'])
@@ -525,7 +613,7 @@ class GeminiPokemonController:
                                     self.logger.error(f"Failed to send button command: {e}")
                                     break
                         else:
-                            self.logger.error(f"Screenshot file not found at {content}")
+                            self.logger.error(f"Screenshot file not found at {screenshot_path}")
                 
             except socket.error as e:
                 if e.args[0] != socket.EWOULDBLOCK and str(e) != 'Resource temporarily unavailable':

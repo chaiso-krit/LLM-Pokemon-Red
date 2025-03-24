@@ -1,17 +1,24 @@
 ---@diagnostic disable: lowercase-global
-
 -- Socket setup for communication with Python controller
 statusSocket     = nil
 lastScreenshotTime = 0
-screenshotInterval = 2  -- Capture screenshots every 3 seconds
+screenshotInterval = 2  -- Capture screenshots every 2 seconds
 
 -- Global variables for key press tracking
 local currentKeyIndex = nil
 local keyPressStartFrame = 0
-local keyPressFrames = 4   -- Hold keys for 4 frames
+local keyPressFrames = 2   -- Hold keys for 2 frames
 
--- Path settings with absolute path
+-- Path settings with absolute path (change this to your path)
 local screenshotPath = "/Users/alex/Documents/LLM-Pokemon-Red-Benchmark/data/screenshots/screenshot.png"
+
+-- Memory addresses for Pokemon Red (Game Boy)
+local memoryAddresses = {
+    playerDirection = 0xC109,  -- Direction facing (0:Down, 4:Up, 8:Left, 12:Right)
+    playerX = 0xD362,          -- X coordinate on map
+    playerY = 0xD361,          -- Y coordinate on map
+    mapId = 0xD35E,            -- Current map ID
+}
 
 -- Debug buffer setup
 function setupBuffer()
@@ -21,11 +28,44 @@ function setupBuffer()
     debugBuffer:print("Debug buffer initialized\n")
 end
 
--- Screenshot capture function
+-- Direction value to text conversion
+function getDirectionText(value)
+    if value == 0 then return "DOWN"
+    elseif value == 4 then return "UP"
+    elseif value == 8 then return "LEFT"
+    elseif value == 12 then return "RIGHT"
+    else return "UNKNOWN (" .. value .. ")"
+    end
+end
+
+-- Read game memory data
+function readGameMemory()
+    local memoryData = {}
+    
+    -- Read direction and convert to readable form
+    local directionValue = emu:read8(memoryAddresses.playerDirection)
+    memoryData.direction = {
+        value = directionValue,
+        text = getDirectionText(directionValue)
+    }
+    
+    -- Read coordinates
+    memoryData.position = {
+        x = emu:read8(memoryAddresses.playerX),
+        y = emu:read8(memoryAddresses.playerY)
+    }
+    
+    -- Read map ID
+    memoryData.mapId = emu:read8(memoryAddresses.mapId)
+    
+    return memoryData
+end
+
+-- Screenshot capture function with game state information
 function captureAndSendScreenshot()
     local currentTime = os.time()
     
-    -- Only capture screenshots every 3 seconds
+    -- Only capture screenshots every few seconds
     if currentTime - lastScreenshotTime >= screenshotInterval then
         -- Create directory if it doesn't exist
         os.execute("mkdir -p \"/Users/alex/Documents/LLM-Pokemon-Red-Benchmark/data/screenshots\"")
@@ -33,9 +73,32 @@ function captureAndSendScreenshot()
         -- Take the screenshot
         emu:screenshot(screenshotPath)
         
-        -- Send path to Python controller
-        sendMessage("screenshot", screenshotPath)
-        debugBuffer:print("Screenshot captured and saved to: " .. screenshotPath .. "\n")
+        -- Read the game memory data
+        local memoryData = readGameMemory()
+        
+        -- Create a data package to send with the screenshot
+        local dataPackage = {
+            path = screenshotPath,
+            direction = memoryData.direction.text,
+            x = memoryData.position.x,
+            y = memoryData.position.y,
+            mapId = memoryData.mapId
+        }
+        
+        -- Convert to a string format for sending
+        local dataString = dataPackage.path .. 
+                          "||" .. dataPackage.direction .. 
+                          "||" .. dataPackage.x .. 
+                          "||" .. dataPackage.y .. 
+                          "||" .. dataPackage.mapId
+        
+        -- Send combined data to Python controller
+        sendMessage("screenshot_with_state", dataString)
+        
+        debugBuffer:print("Screenshot captured with game state:\n")
+        debugBuffer:print("Direction: " .. dataPackage.direction .. "\n")
+        debugBuffer:print("Position: X=" .. dataPackage.x .. ", Y=" .. dataPackage.y .. "\n")
+        debugBuffer:print("Map ID: " .. dataPackage.mapId .. "\n")
         
         -- Update the last screenshot time
         lastScreenshotTime = currentTime

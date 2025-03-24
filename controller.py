@@ -13,7 +13,6 @@ import json
 from enum import Enum
 from typing import Dict, List, Any, Tuple, Deque
 from collections import deque
-
 # Import from your existing modules
 from pokemon_logger import PokemonLogger
 from config_loader import load_config
@@ -431,6 +430,12 @@ class PokemonGameController:
         # Short-term memory for recent actions (last 10 actions)
         self.recent_actions = deque(maxlen=10)
         
+        # Game state tracking
+        self.player_direction = "UNKNOWN"
+        self.player_x = 0
+        self.player_y = 0
+        self.map_id = 0
+        
         # Create directories if they don't exist
         os.makedirs(os.path.dirname(self.notepad_path), exist_ok=True)
         os.makedirs(os.path.dirname(self.screenshot_path), exist_ok=True)
@@ -636,8 +641,52 @@ class PokemonGameController:
             
         return recent_actions_text
 
+    def get_direction_guidance_text(self):
+        """Generate guidance text about player orientation and interactions"""
+        directions = {
+            "UP": "north",
+            "DOWN": "south", 
+            "LEFT": "west",
+            "RIGHT": "east"
+        }
+        
+        facing_direction = directions.get(self.player_direction, self.player_direction)
+        
+        guidance = f"""
+        You are currently at position (X={self.player_x}, Y={self.player_y}) on map {self.map_id}.
+        You are facing {facing_direction} ({self.player_direction}).
+        
+        IMPORTANT NAVIGATION TIPS:
+        - To interact with an object, you must be FACING it and press A
+        - If you need to face a different direction, press the appropriate directional button first
+        - Your current direction is {self.player_direction}
+        """
+        
+        return guidance
+
+    def get_map_name(self, map_id):
+        """Get map name from ID, with fallback for unknown maps"""
+        # Pokémon Red/Blue map IDs (incomplete, add more as needed)
+        map_names = {
+            0: "Pallet Town",
+            1: "Viridian City",
+            2: "Pewter City",
+            3: "Cerulean City",
+            12: "Route 1",
+            13: "Route 2",
+            14: "Route 3",
+            15: "Route 4",
+            37: "Red's House 1F",
+            38: "Red's House 2F",
+            39: "Blue's House",
+            40: "Oak's Lab",
+            # Add more map IDs as you explore the game
+        }
+        
+        return map_names.get(map_id, f"Unknown Area (Map ID: {map_id})")
+
     def process_screenshot(self, screenshot_path=None):
-        """Process a screenshot - with short-term memory of actions"""
+        """Process a screenshot with enhanced game state information"""
         current_time = time.time()
         
         # Check cooldown
@@ -650,6 +699,12 @@ class PokemonGameController:
             
             # Get recent actions (short-term memory)
             recent_actions = self.get_recent_actions_text()
+            
+            # Get directional guidance
+            direction_guidance = self.get_direction_guidance_text()
+            
+            # Get current map name
+            current_map = self.get_map_name(self.map_id)
             
             # Use provided path or default
             path_to_use = screenshot_path if screenshot_path else self.screenshot_path
@@ -665,9 +720,16 @@ class PokemonGameController:
                 self.logger.error(f"Error opening screenshot: {e}")
                 return None
             
-            # Prompt with both short-term and long-term memory
+            # Enhanced prompt with game state information
             prompt = f"""
             You are playing Pokémon Red. Look at this screenshot and choose ONE button to press.
+            
+            ## Current Location
+            You are in {current_map}
+            Position: X={self.player_x}, Y={self.player_y}
+            
+            ## Current Direction
+            You are facing: {self.player_direction}
             
             ## Controls:
             - A: To confirm, select, talk, or advance text
@@ -681,6 +743,11 @@ class PokemonGameController:
             
             ## Long-term Memory (Game State):
             {notepad_content}
+            
+            ## Navigation Tips:
+            - To INTERACT with objects or NPCs, you MUST be FACING them and then press A
+            - If you need to face a different direction, press the appropriate directional button
+            - Current direction: {self.player_direction}
             
             Choose the appropriate button for this situation and use the press_button function to execute it.
             """
@@ -727,7 +794,7 @@ class PokemonGameController:
                         
                         # Add to short-term memory
                         timestamp = time.strftime("%H:%M:%S")
-                        memory_entry = f"[{timestamp}] Pressed {button}"
+                        memory_entry = f"[{timestamp}] Pressed {button} while facing {self.player_direction} at ({self.player_x}, {self.player_y})"
                         self.recent_actions.append(memory_entry)
                         
                         # Log the action
@@ -772,31 +839,43 @@ class PokemonGameController:
                 
                 if len(parts) >= 2:
                     message_type = parts[0]
-                    content = parts[1]
+                    content = parts[1:]  # Get all remaining parts
                     
                     # Handle different message types
-                    if message_type == "screenshot":
-                        self.logger.game_state("Received new screenshot from emulator")
+                    if message_type == "screenshot_with_state":
+                        self.logger.game_state("Received new screenshot with game state from emulator")
                         
-                        # Verify the file exists
-                        if os.path.exists(content):
-                            # Process the screenshot - no fallbacks
-                            decision = self.process_screenshot(content)
+                        # Parse the content which now includes game state
+                        if len(content) >= 5:  # Path, direction, x, y, mapId
+                            screenshot_path = content[0]
+                            self.player_direction = content[1]
+                            self.player_x = int(content[2])
+                            self.player_y = int(content[3])
+                            self.map_id = int(content[4])
                             
-                            if decision and decision.get('button') is not None:
-                                # Only send button press if one was specified by a tool
-                                try:
-                                    button_code = str(decision['button'])
-                                    self.logger.debug(f"Sending button code to emulator: {button_code}")
-                                    client_socket.send(button_code.encode('utf-8') + b'\n')
-                                    self.logger.success("Button command sent to emulator")
-                                except Exception as e:
-                                    self.logger.error(f"Failed to send button command: {e}")
-                                    break
+                            self.logger.debug(f"Game State: Direction={self.player_direction}, " +
+                                             f"Position=({self.player_x}, {self.player_y}), " +
+                                             f"Map ID={self.map_id}")
+                        
+                            # Verify the file exists
+                            if os.path.exists(screenshot_path):
+                                # Process the screenshot - no fallbacks
+                                decision = self.process_screenshot(screenshot_path)
+                                
+                                if decision and decision.get('button') is not None:
+                                    # Only send button press if one was specified by a tool
+                                    try:
+                                        button_code = str(decision['button'])
+                                        self.logger.debug(f"Sending button code to emulator: {button_code}")
+                                        client_socket.send(button_code.encode('utf-8') + b'\n')
+                                        self.logger.success("Button command sent to emulator")
+                                    except Exception as e:
+                                        self.logger.error(f"Failed to send button command: {e}")
+                                        break
+                                else:
+                                    self.logger.warning("No button press in decision - waiting for next screenshot")
                             else:
-                                self.logger.warning("No button press in decision - waiting for next screenshot")
-                        else:
-                            self.logger.error(f"Screenshot file not found at {content}")
+                                self.logger.error(f"Screenshot file not found at {screenshot_path}")
                 
             except socket.error as e:
                 if e.args[0] != socket.EWOULDBLOCK and str(e) != 'Resource temporarily unavailable':
