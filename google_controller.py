@@ -14,7 +14,6 @@ from typing import Dict, List, Any, Tuple
 
 # Import from your existing modules
 from pokemon_logger import PokemonLogger
-from config_loader import load_config
 
 class Tool:
     """Simple class to define a tool for the LLM"""
@@ -169,10 +168,20 @@ class PokemonController:
         self._cleanup_done = False
         self._cleanup_lock = threading.Lock()
         
-        self.config = load_config(config_path)
-        if not self.config:
-            print(f"Failed to load config from {config_path}")
+        # Load config directly from JSON file
+        try:
+            with open(config_path, 'r') as f:
+                self.config = json.load(f)
+        except Exception as e:
+            print(f"Failed to load config from {config_path}: {e}")
             sys.exit(1)
+        
+        # Ensure paths are absolute
+        if 'notepad_path' in self.config and not os.path.isabs(self.config['notepad_path']):
+            self.config['notepad_path'] = os.path.abspath(self.config['notepad_path'])
+            
+        if 'screenshot_path' in self.config and not os.path.isabs(self.config['screenshot_path']):
+            self.config['screenshot_path'] = os.path.abspath(self.config['screenshot_path'])
         
         provider_config = self.config["providers"]["google"]
         
