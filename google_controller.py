@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+#google_controller.py
 import os
 import socket
 import time
@@ -447,8 +448,27 @@ class GeminiPokemonController:
                 self.logger.error(f"Screenshot not found at {path_to_use}")
                 return None
             
-            # Load the original image
+            # Load and enhance the image
             original_image = PIL.Image.open(path_to_use)
+            
+            # Scale the image to 3x its original size for better detail recognition
+            scale_factor = 3
+            scaled_width = original_image.width * scale_factor
+            scaled_height = original_image.height * scale_factor
+            scaled_image = original_image.resize((scaled_width, scaled_height), PIL.Image.LANCZOS)
+            
+            # Enhance contrast for better visibility
+            from PIL import ImageEnhance
+            contrast_enhancer = ImageEnhance.Contrast(scaled_image)
+            contrast_image = contrast_enhancer.enhance(1.5)  # Increase contrast by 50%
+            
+            # Enhance color saturation for better color visibility
+            saturation_enhancer = ImageEnhance.Color(contrast_image)
+            enhanced_image = saturation_enhancer.enhance(1.8)  # Increase saturation by 80%
+            
+            # Optionally enhance brightness slightly
+            brightness_enhancer = ImageEnhance.Brightness(enhanced_image)
+            final_image = brightness_enhancer.enhance(1.1)  # Increase brightness by 10%
             
             prompt = f"""
             You are Gemini playing Pokémon Red, you are the character with the red hat. Look at this screenshot and choose ONE button to press.
@@ -466,7 +486,22 @@ class GeminiPokemonController:
             - UP, DOWN, LEFT, RIGHT: To move your character (use these to enter/exit buildings)
             - START: To open the main menu
             - SELECT: Rarely used special function
+            
+            
+            ## Name Entry Screen Guide:
+            - The cursor is a BLACK TRIANGLE/POINTER (▶) on the left side of the currently selected letter
+            - The letter that will be selected is the one the BLACK TRIANGLE is pointing to
+            - To navigate to a different letter, use UP, DOWN, LEFT, RIGHT buttons
+            - To enter a letter, press A when the cursor is pointing to that letter
+            - The keyboard layout is as follows:
+            ROW 1: A B C D E F G H I
+            ROW 2: J K L M N O P Q R
+            ROW 3: S T U V W X Y Z
+            ROW 4: Special characters
+            ROW 5: END (bottom right)
 
+            ## URGENT WARNING: DO NOT PRESS A UNLESS YOU ARE ON THE CORRECT LETTER!
+            
             ## Navigation Rules:
             - If you've pressed the same button 3+ times with no change, TRY A DIFFERENT DIRECTION
             - You must be DIRECTLY ON TOP of exits (red mats, doors, stairs) to use them
@@ -480,16 +515,16 @@ class GeminiPokemonController:
             
             ## Long-term Memory (Game State):
             {notepad_content}
-
+            
             IMPORTANT: After each significant change (entering new area, talking to someone, finding items), use the update_notepad function to record what you learned or where you are.
-
+            
             ## IMPORTANT INSTRUCTIONS:
             1. FIRST, provide a SHORT paragraph (2-3 sentences) describing what you see in the screenshot.
             2. THEN, provide a BRIEF explanation of what you plan to do and why.
             3. FINALLY, use the press_button function to execute your decision.
             """
             
-            images = [original_image]
+            images = [final_image]
             self.logger.section(f"Requesting decision from Gemini")
             
             response, tool_calls, text = self.gemini.call_with_tools(
@@ -525,7 +560,7 @@ class GeminiPokemonController:
                         timestamp = time.strftime("%H:%M:%S")
                         self.recent_actions.append(
                             (timestamp, button, text, self.player_direction, 
-                             self.player_x, self.player_y, self.map_id)
+                            self.player_x, self.player_y, self.map_id)
                         )
                         
                         self.logger.ai_action(button, button_code)
