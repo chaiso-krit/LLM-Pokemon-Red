@@ -73,7 +73,7 @@ pip install "google-generativeai>=0.3.0" pillow openai anthropic python-dotenv
    - Start playing the game
    - In a separate terminal, run the controller:
    ```bash
-   python controller.py
+   python google_controller.py
    ```
    - Return to mGBA, open Tools > Script Viewer
    - Load and run the `script.lua` file
@@ -93,17 +93,14 @@ pip install "google-generativeai>=0.3.0" pillow openai anthropic python-dotenv
 
 - Google Gemini (gemini-2.0-flash)
 
-*Note: This version currently only supports Google's Gemini API. Support for other LLMs may be added in future updates.*
+*Note: This version currently only supports Google's Gemini API. Removed support for other LLM's while I solve it for Gemini as the API is free.*
 
-## Tips for Best Results
+## Tips
 
 - Adjust the `decision_cooldown` in your config based on your Gemini API quota:
-  - Recommended: 1.0-2.0 seconds for most Gemini API keys
-  - If you have a high quota: 0.5 seconds may work
-  - If you encounter rate limiting: increase to 3.0+ seconds
-- Consider API costs when running extended benchmarks
-- Try different LLMs to see their unique "play styles"
-- Increase the `debug_mode` value to see detailed logs
+  - Recommended: 3-6 seconds for most Gemini API keys
+  - If you encounter rate limiting: increase to 6+ seconds
+- Consider API costs when running for extended time
 
 ## Contributing
 
