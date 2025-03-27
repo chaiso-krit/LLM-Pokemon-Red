@@ -13,19 +13,25 @@ This project challenges AI systems to play Pokémon Red by only seeing the game 
 ## How It Works
 
 1. **Game Emulator (mGBA)** runs Pokémon Red with a Lua script that:
-   - Takes screenshots
+   - Takes screenshots on request
+   - Captures game state information (player position, direction, map ID)
    - Receives button commands from the controller
    - Executes those commands in the game
+   - Notifies the controller when ready for the next command
 
 2. **Python Controller** bridges the emulator and AI:
-   - Manages screenshots and the AI's memory notepad
-   - Sends data to the chosen LLM
-   - Returns the AI's decisions to the emulator
+   - Requests screenshots when ready to process
+   - Manages the AI's short-term memory of recent actions
+   - Maintains a long-term "notepad" of game progress
+   - Processes screenshots through the LLM API
+   - Sends button commands back to the emulator
+   - Enforces rate limiting to prevent API overload
 
-3. **LLM Provider** (Gemini, OpenAI, or Anthropic) acts as the "brain":
-   - Analyzes game screenshots
+3. **LLM Provider** (Gemini) acts as the "brain":
+   - Analyzes game screenshots with enhanced visibility
+   - Uses game state context to make informed decisions
    - Decides which buttons to press
-   - Updates its notepad to track progress
+   - Updates the notepad to track progress
 
 ## Quick Setup
 
@@ -35,30 +41,26 @@ pip install "google-generativeai>=0.3.0" pillow openai anthropic python-dotenv
 ```
 
 2. **Set up your config**:
-   - Run the setup script: `python setup.py`
-   - Edit the created `.env` file with your API keys:
-
-```
-# API Keys
-GEMINI_API_KEY=YOUR_KEY_HERE
-OPENAI_API_KEY=YOUR_KEY_HERE
-ANTHROPIC_API_KEY=YOUR_KEY_HERE
-
-# Default provider
-DEFAULT_LLM_PROVIDER=gemini
-
-# Models
-GEMINI_MODEL=gemini-2.0-flash
-OPENAI_MODEL=gpt-4o
-ANTHROPIC_MODEL=claude-3-sonnet-20240229
-```
-
-3. **Test your setup**:
-```bash
-python test_llm_provider.py
+   - Edit `config.json` with your Gemini API key and settings:
+```json
+{
+  "host": "127.0.0.1",
+  "port": 8888,
+  "decision_cooldown": 1.0,
+  "screenshot_path": "data/screenshots/screenshot.png",
+  "notepad_path": "data/notepad/game_memory.md",
+  "debug_mode": true,
+  "providers": {
+    "google": {
+      "api_key": "YOUR_GEMINI_API_KEY",
+      "model_name": "gemini-2.0-flash",
+      "max_tokens": 1024
+    }
+  }
+}
 ```
 
-4. **Update the Lua script path**:
+3. **Update the Lua script path**:
    - Open `script.lua` in any text editor
    - Find and change the following line to match your system's full path:
    ```lua
@@ -66,7 +68,7 @@ python test_llm_provider.py
    ```
    - Example: `local screenshotPath = "/Users/yourname/Documents/LLM-Pokemon-Red-Benchmark/data/screenshots/screenshot.png"`
 
-5. **Run in the correct order**:
+4. **Run in the correct order**:
    - Start mGBA and load your Pokémon Red ROM
    - Start playing the game
    - In a separate terminal, run the controller:
@@ -78,17 +80,30 @@ python test_llm_provider.py
    
    This sequence is important! The controller must be running before you activate the Lua script.
 
-## Supported LLM Providers
+## Key Improvements in This Version
+
+- **Request-based Screenshot System**: The controller explicitly requests screenshots when it's ready to process them, instead of using a timer-based approach
+- **Enhanced Game State Tracking**: Captures player direction, position, and map ID for more informed decision making
+- **Rate Limiting**: Properly implements cooldown between API calls to prevent rate limit issues
+- **Memory Management**: Improved short-term and long-term memory systems to help the AI make more consistent decisions
+- **Image Enhancement**: Screenshots are processed to improve visibility and detail recognition
+- **Synchronization**: Better communication flow between emulator and controller
+
+## Supported LLM Provider
 
 - Google Gemini (gemini-2.0-flash)
-- OpenAI (GPT-4o)
-- Anthropic Claude (claude-3-sonnet)
+
+*Note: This version currently only supports Google's Gemini API. Support for other LLMs may be added in future updates.*
 
 ## Tips for Best Results
 
-- Adjust the `decision_cooldown` in your config to match your LLM provider's rate limits
+- Adjust the `decision_cooldown` in your config based on your Gemini API quota:
+  - Recommended: 1.0-2.0 seconds for most Gemini API keys
+  - If you have a high quota: 0.5 seconds may work
+  - If you encounter rate limiting: increase to 3.0+ seconds
 - Consider API costs when running extended benchmarks
 - Try different LLMs to see their unique "play styles"
+- Increase the `debug_mode` value to see detailed logs
 
 ## Contributing
 
