@@ -1,8 +1,7 @@
 ---@diagnostic disable: lowercase-global
 -- Socket setup for communication with Python controller
-statusSocket     = nil
-lastScreenshotTime = 0
-screenshotInterval = 2  -- Capture screenshots every 2 seconds
+statusSocket = nil
+waitingForRequest = true -- New flag to indicate if we're waiting for controller request
 
 -- Global variables for key press tracking
 local currentKeyIndex = nil
@@ -63,46 +62,41 @@ end
 
 -- Screenshot capture function with game state information
 function captureAndSendScreenshot()
-    local currentTime = os.time()
+    -- Create directory if it doesn't exist
+    os.execute("mkdir -p \"/Users/alex/Documents/LLM-Pokemon-Red-Benchmark/data/screenshots\"")
     
-    -- Only capture screenshots every few seconds
-    if currentTime - lastScreenshotTime >= screenshotInterval then
-        -- Create directory if it doesn't exist
-        os.execute("mkdir -p \"/Users/alex/Documents/LLM-Pokemon-Red-Benchmark/data/screenshots\"")
-        
-        -- Take the screenshot
-        emu:screenshot(screenshotPath)
-        
-        -- Read the game memory data
-        local memoryData = readGameMemory()
-        
-        -- Create a data package to send with the screenshot
-        local dataPackage = {
-            path = screenshotPath,
-            direction = memoryData.direction.text,
-            x = memoryData.position.x,
-            y = memoryData.position.y,
-            mapId = memoryData.mapId
-        }
-        
-        -- Convert to a string format for sending
-        local dataString = dataPackage.path .. 
-                          "||" .. dataPackage.direction .. 
-                          "||" .. dataPackage.x .. 
-                          "||" .. dataPackage.y .. 
-                          "||" .. dataPackage.mapId
-        
-        -- Send combined data to Python controller
-        sendMessage("screenshot_with_state", dataString)
-        
-        debugBuffer:print("Screenshot captured with game state:\n")
-        debugBuffer:print("Direction: " .. dataPackage.direction .. "\n")
-        debugBuffer:print("Position: X=" .. dataPackage.x .. ", Y=" .. dataPackage.y .. "\n")
-        debugBuffer:print("Map ID: " .. dataPackage.mapId .. "\n")
-        
-        -- Update the last screenshot time
-        lastScreenshotTime = currentTime
-    end
+    -- Take the screenshot
+    emu:screenshot(screenshotPath)
+    
+    -- Read the game memory data
+    local memoryData = readGameMemory()
+    
+    -- Create a data package to send with the screenshot
+    local dataPackage = {
+        path = screenshotPath,
+        direction = memoryData.direction.text,
+        x = memoryData.position.x,
+        y = memoryData.position.y,
+        mapId = memoryData.mapId
+    }
+    
+    -- Convert to a string format for sending
+    local dataString = dataPackage.path .. 
+                      "||" .. dataPackage.direction .. 
+                      "||" .. dataPackage.x .. 
+                      "||" .. dataPackage.y .. 
+                      "||" .. dataPackage.mapId
+    
+    -- Send combined data to Python controller
+    sendMessage("screenshot_with_state", dataString)
+    
+    debugBuffer:print("Screenshot captured with game state:\n")
+    debugBuffer:print("Direction: " .. dataPackage.direction .. "\n")
+    debugBuffer:print("Position: X=" .. dataPackage.x .. ", Y=" .. dataPackage.y .. "\n")
+    debugBuffer:print("Map ID: " .. dataPackage.mapId .. "\n")
+    
+    -- Set flag back to waiting for next request
+    waitingForRequest = true
 end
 
 -- Frame counter to manage key press duration
@@ -121,6 +115,9 @@ function handleKeyPress()
             local keyNames = { "A", "B", "SELECT", "START", "RIGHT", "LEFT", "UP", "DOWN", "R", "L" }
             debugBuffer:print("Released " .. keyNames[currentKeyIndex + 1] .. " after " .. framesPassed .. " frames\n")
             currentKeyIndex = nil
+            
+            -- After key press is completed, notify controller we're ready for next request
+            sendMessage("ready", "true")
         end
     end
 end
@@ -140,24 +137,37 @@ function socketReceived()
         data = data:gsub("^%s*(.-)%s*$", "%1")
         debugBuffer:print("Received from AI controller: '" .. data .. "'\n")
         
-        -- Convert to key index
-        local keyIndex = tonumber(data)
-        
-        if keyIndex and keyIndex >= 0 and keyIndex <= 9 then
-            local keyNames = { "A", "B", "SELECT", "START", "RIGHT", "LEFT", "UP", "DOWN", "R", "L" }
-            
-            -- Clear existing key presses
-            emu:clearKeys(0x3FF)
-            
-            -- Set up the key press to be held
-            currentKeyIndex = keyIndex
-            keyPressStartFrame = emu:currentFrame()
-            
-            -- Press the key (it will be held by frame callback)
-            emu:addKey(keyIndex)
-            debugBuffer:print("AI pressing: " .. keyNames[keyIndex + 1] .. " (will hold for " .. keyPressFrames .. " frames)\n")
+        -- Process different command types
+        if data == "request_screenshot" then
+            debugBuffer:print("Screenshot requested by controller\n")
+            -- Only take screenshot if we're waiting for a request
+            if waitingForRequest then
+                waitingForRequest = false
+                captureAndSendScreenshot()
+            end
         else
-            debugBuffer:print("Invalid key data received: '" .. data .. "'\n")
+            -- Assume it's a button command if not a screenshot request
+            local keyIndex = tonumber(data)
+            
+            if keyIndex and keyIndex >= 0 and keyIndex <= 9 then
+                local keyNames = { "A", "B", "SELECT", "START", "RIGHT", "LEFT", "UP", "DOWN", "R", "L" }
+                
+                -- Clear existing key presses
+                emu:clearKeys(0x3FF)
+                
+                -- Set up the key press to be held
+                currentKeyIndex = keyIndex
+                keyPressStartFrame = emu:currentFrame()
+                
+                -- Press the key (it will be held by frame callback)
+                emu:addKey(keyIndex)
+                debugBuffer:print("AI pressing: " .. keyNames[keyIndex + 1] .. " (will hold for " .. keyPressFrames .. " frames)\n")
+            else
+                debugBuffer:print("Invalid key data received: '" .. data .. "'\n")
+                -- Notify we're ready for next input even if this was invalid
+                waitingForRequest = true
+                sendMessage("ready", "true")
+            end
         end
     elseif err ~= socket.ERRORS.AGAIN then
         debugBuffer:print("Socket error: " .. err .. "\n")
@@ -193,6 +203,9 @@ function startSocket()
     -- Connect to the controller
     if statusSocket:connect("127.0.0.1", 8888) then
         debugBuffer:print("Successfully connected to controller\n")
+        -- Notify controller we're ready for first instruction
+        sendMessage("ready", "true")
+        waitingForRequest = true
     else
         debugBuffer:print("Failed to connect to controller\n")
         stopSocket()
@@ -202,7 +215,6 @@ end
 -- Add callbacks to run our functions
 callbacks:add("start", setupBuffer)
 callbacks:add("start", startSocket)
-callbacks:add("frame", captureAndSendScreenshot)
 callbacks:add("frame", handleKeyPress)
 
 -- Initialize on script load

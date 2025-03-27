@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-#google_controller.py
 import os
 import socket
 import time
@@ -18,7 +17,7 @@ from pokemon_logger import PokemonLogger
 from config_loader import load_config
 
 class Tool:
-    """Simple class to define a tool for Gemini"""
+    """Simple class to define a tool for the LLM"""
     def __init__(self, name: str, description: str, parameters: List[Dict[str, Any]]):
         self.name = name
         self.description = description
@@ -42,7 +41,7 @@ class Tool:
         }
 
 class ToolCall:
-    """Represents a tool call from Gemini"""
+    """Represents a tool call from the LLM"""
     def __init__(self, id: str, name: str, arguments: Dict[str, Any]):
         self.id = id
         self.name = name
@@ -165,7 +164,7 @@ class GeminiClient:
         
         return ""
 
-class GeminiPokemonController:
+class PokemonController:
     def __init__(self, config_path='config.json'):
         self._cleanup_done = False
         self._cleanup_lock = threading.Lock()
@@ -177,7 +176,7 @@ class GeminiPokemonController:
         
         provider_config = self.config["providers"]["google"]
         
-        self.gemini = GeminiClient(
+        self.llm_client = GeminiClient(
             api_key=provider_config["api_key"],
             model_name=provider_config["model_name"],
             max_tokens=provider_config.get("max_tokens", 1024)
@@ -190,7 +189,6 @@ class GeminiPokemonController:
         self.screenshot_path = self.config['screenshot_path']
         self.current_client = None
         self.running = True
-        self.last_decision_time = 0
         self.decision_cooldown = self.config['decision_cooldown']
         self.client_threads = []
         self.debug_mode = self.config.get('debug_mode', False)
@@ -200,6 +198,10 @@ class GeminiPokemonController:
         self.player_x = 0
         self.player_y = 0
         self.map_id = 0
+        
+        # Processing state flags
+        self.is_processing = False
+        self.emulator_ready = False
         
         # Modified: Store timestamp, button, full reasoning text, and position/direction
         self.recent_actions = deque(maxlen=10)
@@ -360,7 +362,7 @@ class GeminiPokemonController:
             Format the response as a well-structured markdown document.
             Here are the notes to summarize:
             """
-            response, _, text = self.gemini.call_with_tools(
+            response, _, text = self.llm_client.call_with_tools(
                 message=summarize_prompt + notepad_content,
                 tools=[]
             )
@@ -431,11 +433,11 @@ class GeminiPokemonController:
 
     def process_screenshot(self, screenshot_path=None):
         """Process a screenshot with enhanced game state information"""
-        current_time = time.time()
-        
-        if current_time - self.last_decision_time < self.decision_cooldown:
+        if self.is_processing:
+            self.logger.debug("Already processing a decision, skipping")
             return None
             
+        self.is_processing = True
         try:
             notepad_content = self.read_notepad()
             recent_actions = self.get_recent_actions_text()
@@ -446,6 +448,7 @@ class GeminiPokemonController:
             
             if not os.path.exists(path_to_use):
                 self.logger.error(f"Screenshot not found at {path_to_use}")
+                self.is_processing = False
                 return None
             
             # Load and enhance the image
@@ -471,7 +474,7 @@ class GeminiPokemonController:
             final_image = brightness_enhancer.enhance(1.1)  # Increase brightness by 10%
             
             prompt = f"""
-            You are Gemini playing Pokémon Red, you are the character with the red hat. Look at this screenshot and choose ONE button to press.
+            You are an AI playing Pokémon Red, you are the character with the red hat. Look at this screenshot and choose ONE button to press.
             
             ## Current Location
             You are in {current_map}
@@ -525,15 +528,15 @@ class GeminiPokemonController:
             """
             
             images = [final_image]
-            self.logger.section(f"Requesting decision from Gemini")
+            self.logger.section(f"Requesting decision from LLM")
             
-            response, tool_calls, text = self.gemini.call_with_tools(
+            response, tool_calls, text = self.llm_client.call_with_tools(
                 message=prompt,
                 tools=self.tools,
                 images=images
             )
             
-            print(f"Gemini Text Response: {text}")
+            print(f"LLM Text Response: {text}")
             
             button_code = None
             
@@ -556,7 +559,7 @@ class GeminiPokemonController:
                         button_code = button_map[button]
                         self.logger.success(f"Tool used button: {button}")
                         
-                        # Modified: Store timestamp, button, reasoning, and position/direction
+                        # Store timestamp, button, reasoning, and position/direction
                         timestamp = time.strftime("%H:%M:%S")
                         self.recent_actions.append(
                             (timestamp, button, text, self.player_direction, 
@@ -564,7 +567,6 @@ class GeminiPokemonController:
                         )
                         
                         self.logger.ai_action(button, button_code)
-                        self.last_decision_time = current_time
                         return {'button': button_code}
             
             if button_code is None:
@@ -576,12 +578,15 @@ class GeminiPokemonController:
             if self.debug_mode:
                 import traceback
                 self.logger.debug(traceback.format_exc())
+        finally:
+            self.is_processing = False
         return None
 
     def handle_client(self, client_socket, client_address):
         """Handle communication with the emulator client"""
         self.logger.section(f"Connected to emulator at {client_address}")
         self.current_client = client_socket
+        self.last_decision_time = 0  # Track the time of last decision
         
         self.logger.game_state("Waiting for game data...")
         
@@ -598,8 +603,30 @@ class GeminiPokemonController:
                     message_type = parts[0]
                     content = parts[1:]  # Get all remaining parts
                     
-                    # Handle the new screenshot_with_state message type
-                    if message_type == "screenshot_with_state":
+                    # Handle the "ready" message from the emulator
+                    if message_type == "ready":
+                        self.logger.game_state("Emulator is ready for next command")
+                        self.emulator_ready = True
+                        
+                        # Check if cooldown period has passed
+                        current_time = time.time()
+                        time_since_last_decision = current_time - self.last_decision_time
+                        
+                        if time_since_last_decision < self.decision_cooldown:
+                            wait_time = self.decision_cooldown - time_since_last_decision
+                            self.logger.debug(f"Waiting {wait_time:.2f}s for cooldown before next request")
+                            time.sleep(wait_time)
+                        
+                        # Request a screenshot if we're not currently processing one
+                        if not self.is_processing:
+                            try:
+                                self.logger.debug("Requesting screenshot from emulator")
+                                client_socket.send(b'request_screenshot\n')
+                            except Exception as e:
+                                self.logger.error(f"Failed to request screenshot: {e}")
+                    
+                    # Handle the screenshot_with_state message type
+                    elif message_type == "screenshot_with_state":
                         self.logger.game_state("Received new screenshot with game state from emulator")
                         
                         # Parse the content which now includes game state
@@ -625,30 +652,25 @@ class GeminiPokemonController:
                                         self.logger.debug(f"Sending button code to emulator: {button_code}")
                                         client_socket.send(button_code.encode('utf-8') + b'\n')
                                         self.logger.success("Button command sent to emulator")
+                                        self.emulator_ready = False
+                                        
+                                        # Update the last decision time
+                                        self.last_decision_time = time.time()
                                     except Exception as e:
                                         self.logger.error(f"Failed to send button command: {e}")
                                         break
+                                else:
+                                    # If no decision was made, we still need to respect the cooldown
+                                    self.last_decision_time = time.time()
+                                    
+                                    # Request another screenshot after a small delay
+                                    try:
+                                        time.sleep(0.5)  # Small delay to avoid flooding
+                                        client_socket.send(b'request_screenshot\n')
+                                    except Exception as e:
+                                        self.logger.error(f"Failed to request another screenshot: {e}")
                             else:
                                 self.logger.error(f"Screenshot file not found at {screenshot_path}")
-                    
-                    # Maintain backward compatibility with the old format
-                    elif message_type == "screenshot":
-                        self.logger.game_state("Received legacy screenshot from emulator (no game state)")
-                        screenshot_path = content[0]
-                        
-                        if os.path.exists(screenshot_path):
-                            decision = self.process_screenshot(screenshot_path)
-                            if decision and decision.get('button') is not None:
-                                try:
-                                    button_code = str(decision['button'])
-                                    self.logger.debug(f"Sending button code to emulator: {button_code}")
-                                    client_socket.send(button_code.encode('utf-8') + b'\n')
-                                    self.logger.success("Button command sent to emulator")
-                                except Exception as e:
-                                    self.logger.error(f"Failed to send button command: {e}")
-                                    break
-                        else:
-                            self.logger.error(f"Screenshot file not found at {screenshot_path}")
                 
             except socket.error as e:
                 if e.args[0] != socket.EWOULDBLOCK and str(e) != 'Resource temporarily unavailable':
@@ -662,6 +684,9 @@ class GeminiPokemonController:
                 if not self.running:
                     break
                 continue
+            
+            # Add a small delay to avoid CPU spinning
+            time.sleep(0.01)
         
         self.logger.section(f"Disconnected from emulator at {client_address}")
         self.current_client = None
@@ -687,7 +712,7 @@ class GeminiPokemonController:
 
     def start(self):
         """Start the controller server"""
-        self.logger.header(f"Starting Pokémon Game Controller with Gemini")
+        self.logger.header(f"Starting Pokémon Game Controller")
         
         try:
             while self.running:
@@ -733,12 +758,13 @@ class GeminiPokemonController:
             self.cleanup()
             self.logger.success("Server shut down cleanly")
 
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Gemini Pokémon Game AI Controller")
+    parser = argparse.ArgumentParser(description="Pokémon Game AI Controller")
     parser.add_argument("--config", "-c", default="config.json", help="Path to the configuration file")
     args = parser.parse_args()
     
-    controller = GeminiPokemonController(args.config)
+    controller = PokemonController(args.config)
     try:
         controller.start()
     except KeyboardInterrupt:
