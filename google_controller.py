@@ -15,11 +15,6 @@ from typing import Dict, List, Any, Tuple
 # Import from your existing modules
 from pokemon_logger import PokemonLogger
 
-# Import ollama instead of google.generativeai
-from ollama import Client
-
-import re
-
 class Tool:
     """Simple class to define a tool for the LLM"""
     def __init__(self, name: str, description: str, parameters: List[Dict[str, Any]]):
@@ -27,11 +22,8 @@ class Tool:
         self.description = description
         self.parameters = parameters
     
-    def to_ollama_format(self) -> Dict[str, Any]:
-        """Convert to Ollama's expected format (simple function definition for prompt)"""
-        # Ollama's tool calling might require a specific schema; 
-        # for now, we'll represent it as a string description.
-        param_str = ", ".join([f"{p['name']}: {p['type']} ({p['description']})" for p in self.parameters])
+    def to_gemini_format(self) -> Dict[str, Any]:
+        """Convert to Gemini's expected format"""
         return {
             "name": self.name,
             "description": self.description,
@@ -54,32 +46,32 @@ class ToolCall:
         self.name = name
         self.arguments = arguments
 
-class GeminiClient: # Renamed to OllamaClient for clarity if this were a full refactor
-    """Client specifically for communicating with Ollama"""
-    def __init__(self, provider_config):
-        self.api_key = provider_config.get("api_key", "") # Not directly used by ollama, but kept for compatibility
-        self.model_name = provider_config.get("model_name")
-        self.model_image_name = provider_config.get("model_image_name")
-        self.max_tokens = provider_config.get("max_tokens", 1024) # Max tokens for Ollama output
-        self.client_host = provider_config.get("host")
+class GeminiClient:
+    """Client specifically for communicating with Gemini"""
+    def __init__(self, api_key: str, model_name: str, max_tokens: int = 1024):
+        self.api_key = api_key
+        self.model_name = model_name
+        self.max_tokens = max_tokens
         self._setup_client()
     
     def _setup_client(self):
-        """Set up the Ollama client (no explicit setup needed for ollama library)"""
-        # No explicit setup like API key configuration needed for ollama client library
-        # The model needs to be pulled and running via 'ollama run <model_name>'
-        self.client = Client(
-            host=self.client_host,
-        )        
+        """Set up the Gemini client"""
+        import google.generativeai as genai
+        genai.configure(api_key=self.api_key)
+        self.client = genai
     
     def call_with_tools(self, message: str, tools: List[Tool], images: List[PIL.Image.Image] = None) -> Tuple[Any, List[ToolCall], str]:
         """
-        Call Ollama with the given message and tools, optionally including images
+        Call Gemini with the given message and tools, optionally including images
         """
-        provider_tools = [tool.to_ollama_format() for tool in tools]
+        import google.generativeai as genai
+        
+        provider_tools = [tool.to_gemini_format() for tool in tools]
+        
+        model = self.client.GenerativeModel(model_name=self.model_name)
         
         system_message = """
-        You are playing Pokémon Yellow. Your job is to press buttons to control the game.
+        You are playing Pokémon Red. Your job is to press buttons to control the game.
         
         IMPORTANT: After analyzing the screenshot, you MUST use the press_button function.
         You are REQUIRED to use the press_button function with every response.
@@ -87,133 +79,63 @@ class GeminiClient: # Renamed to OllamaClient for clarity if this were a full re
         NEVER just say what button to press - ALWAYS use the press_button function to actually press it.
         """
         
-        messages = [
-            {"role": "system", "content": system_message},
-            #{"role": "assistant", "content": "I understand. For every screenshot, I will use the press_button function to specify which button to press (A, B, UP, DOWN, etc.)."},
-        ]
+        chat = model.start_chat(
+            history=[
+                {"role": "user", "parts": [system_message]},
+                {"role": "model", "parts": ["I understand. For every screenshot, I will use the press_button function to specify which button to press (A, B, UP, DOWN, etc.)."]}
+            ]
+        )
         
-        # Prepare the user message with image(s) if present
-        user_message_content = {"role": "user", "content":  f"{message}", "images": []}
-    
+        enhanced_message = f"{message}\n\nIMPORTANT: You MUST use the press_button function. Select which button to press (A, B, UP, DOWN, LEFT, RIGHT, START or SELECT)."
+        
+        content_parts = [enhanced_message]
+        
         if images:
-            for img in images:
-                user_message_content["images"].append(img)
+            for image in images:
+                content_parts.append(image)
         
-        messages.append(user_message_content)
-        
-        try:
-            response = self.client.chat(
-                model=self.model_name,
-                messages=messages,
-                # options={
-                #     "num_predict": self.max_tokens,
-                #     "temperature": 0.2,
-                #     "top_p": 0.95,
-                #     "top_k": 0
-                # },
-                #tools=provider_tools, # Pass tools directly here
-            )
-        except Exception as e:
-            print(f"Error calling Ollama: {e}")
-            import traceback
-            print(traceback.format_exc())
-            return None, [], ""
+        response = chat.send_message(
+            content=content_parts,
+            generation_config={
+                "max_output_tokens": self.max_tokens,
+                "temperature": 0.2,
+                "top_p": 0.95,
+                "top_k": 0
+            },
+            tools={"function_declarations": provider_tools}
+        )
         
         return response, self._parse_tool_calls(response), self._extract_text(response)
     
-    def call_with_images(self, message: str, images_path: List[str] = None) -> Tuple[Any, str]:
-        """
-        Call Ollama with the given message and images
-        """
-        
-        system_message = """
-        You are playing Pokémon Yellow.
-        
-        IMPORTANT: After analyzing the screenshot, you must describe important information that relevant to game.
-        Only text about screenshot, not opinion or question.
-        """
-        
-        messages = [
-            {"role": "system", "content": system_message},
-        ]
-        
-        # Prepare the user message with image(s) if present
-        user_message_content = {"role": "user", "content":  f"Describe screenshot in detail", "images": []}
-    
-        if images_path:
-            user_message_content["images"] = images_path
-        
-        messages.append(user_message_content)
-        
-        try:
-            response = self.client.chat(
-                model=self.model_image_name,
-                messages=messages,
-            )
-        except Exception as e:
-            print(f"Error calling Ollama: {e}")
-            import traceback
-            print(traceback.format_exc())
-            return None, [], ""
-        
-        return response, self._extract_text(response)
-    
     def _parse_tool_calls(self, response: Any) -> List[ToolCall]:
-        """Parse tool calls from Ollama's response"""
+        """Parse tool calls from Gemini's response"""
         tool_calls = []
-
-        #print(response)
         
         try:
-            # Ollama's chat response for tool calls typically comes as content in JSON format
-            # within the message, or sometimes as part of 'tool_calls' if the model supports it directly.
-            # Assuming the tool call comes as a JSON object in the 'content' field for simplicity.
-            
-            if response and 'message' in response and 'tool_calls' in response['message']:
-                for call_data in response['message']['tool_calls']:
-                    if 'function' in call_data:
-                        tool_calls.append(ToolCall(
-                            id=call_data.get('id', f"call_{len(tool_calls)}"),
-                            name=call_data['function'].get('name', ''),
-                            arguments=call_data['function'].get('arguments', {})
-                        ))
-            elif response and 'message' in response and 'content' in response['message']:
-                content_str = response['message']['content']
-                # Try to parse content as JSON, expecting tool calls
-                try:
-                    parsed_content = json.loads(content_str)
-                    if isinstance(parsed_content, dict) and 'tool_call' in parsed_content:
-                        # Simple case: direct tool_call object
-                        call_data = parsed_content['tool_call']
-                        if 'name' in call_data and 'arguments' in call_data:
-                            tool_calls.append(ToolCall(
-                                id=f"call_{len(tool_calls)}",
-                                name=call_data['name'],
-                                arguments=call_data['arguments']
-                            ))
-                    elif isinstance(parsed_content, dict) and 'function_call' in parsed_content:
-                        # Another common format for function calls
-                        call_data = parsed_content['function_call']
-                        if 'name' in call_data and 'arguments' in call_data:
-                            tool_calls.append(ToolCall(
-                                id=f"call_{len(tool_calls)}",
-                                name=call_data['name'],
-                                arguments=call_data['arguments']
-                            ))
-                except json.JSONDecodeError:
-                    # Not a JSON tool call in content, proceed to extract text
-                    pattern = r"press_button\((.*?)\)"
-                    matches = re.findall(pattern, content_str)
-                    if len(matches) == 1:
-                        tool_calls.append(ToolCall(
-                                id=f"call_{len(tool_calls)}",
-                                name='press_button',
-                                arguments={'button': matches[0]}
-                            ))
-                    else:
-                        print("Error Parsing")
+            if hasattr(response, "candidates"):
+                for candidate in response.candidates:
+                    if hasattr(candidate, "content") and candidate.content:
+                        for part in candidate.content.parts:
+                            if hasattr(part, "function_call") and part.function_call:
+                                if hasattr(part.function_call, "name") and part.function_call.name:
+                                    args = {}
+                                    if hasattr(part.function_call, "args") and part.function_call.args is not None:
+                                        try:
+                                            if hasattr(part.function_call.args, "items"):
+                                                for key, value in part.function_call.args.items():
+                                                    args[key] = str(value)
+                                            else:
+                                                args = {"argument": str(part.function_call.args)}
+                                        except:
+                                            pass
+                                    
+                                    tool_calls.append(ToolCall(
+                                        id=f"call_{len(tool_calls)}",
+                                        name=part.function_call.name,
+                                        arguments=args
+                                    ))
         except Exception as e:
-            print(f"Error parsing Ollama tool calls: {e}")
+            print(f"Error parsing Gemini tool calls: {e}")
             import traceback
             print(traceback.format_exc())
         
@@ -223,12 +145,22 @@ class GeminiClient: # Renamed to OllamaClient for clarity if this were a full re
         return tool_calls
     
     def _extract_text(self, response: Any) -> str:
-        """Extract text from the Ollama response"""
+        """Extract text from the Gemini response"""
         try:
-            if response and 'message' in response and 'content' in response['message']:
-                return response['message']['content']
-        except Exception as e:
-            print(f"Error extracting text from Ollama response: {e}")
+            if hasattr(response, "text"):
+                return response.text
+            if hasattr(response, "candidates") and response.candidates:
+                text_parts = []
+                for candidate in response.candidates:
+                    if hasattr(candidate, "content") and candidate.content:
+                        for part in candidate.content.parts:
+                            if hasattr(part, "text") and part.text:
+                                text_parts.append(part.text)
+                if text_parts:
+                    return "\n".join(text_parts)
+        except:
+            pass
+        
         return ""
 
 class PokemonController:
@@ -251,10 +183,12 @@ class PokemonController:
         if 'screenshot_path' in self.config and not os.path.isabs(self.config['screenshot_path']):
             self.config['screenshot_path'] = os.path.abspath(self.config['screenshot_path'])
         
-        provider_config = self.config["providers"]["ollama"] # Changed to ollama
+        provider_config = self.config["providers"]["google"]
         
-        self.llm_client = GeminiClient( # This would ideally be OllamaClient
-            provider_config=provider_config
+        self.llm_client = GeminiClient(
+            api_key=provider_config["api_key"],
+            model_name=provider_config["model_name"],
+            max_tokens=provider_config.get("max_tokens", 1024)
         )
         
         self.server_socket = None
@@ -390,7 +324,7 @@ class PokemonController:
             with open(self.notepad_path, 'w') as f:
                 f.write("# Pokémon Red Game Progress\n\n")
                 f.write(f"Game started: {timestamp}\n\n")
-                #f.write("## Current Objectives\n- Enter my name 'Gemini' and give my rival a name.\n\n")
+                f.write("## Current Objectives\n- Enter my name 'Gemini' and give my rival a name.\n\n")
                 f.write("## Exit my house\n\n")
                 f.write("## Current Objectives\n- Find Professor Oak to get first Pokémon\n- Start Pokémon journey\n\n")
                 f.write("## Current Location\n- Starting in player's house in Pallet Town\n\n")
@@ -437,7 +371,6 @@ class PokemonController:
             Format the response as a well-structured markdown document.
             Here are the notes to summarize:
             """
-            # For Ollama, we'll call without tools and expect a text response.
             response, _, text = self.llm_client.call_with_tools(
                 message=summarize_prompt + notepad_content,
                 tools=[]
@@ -498,8 +431,8 @@ class PokemonController:
             13: "Route 2",
             14: "Route 3",
             15: "Route 4",
-            37: "Yellow's House 1F",
-            38: "Yellow's House 2F",
+            37: "Red's House 1F",
+            38: "Red's House 2F",
             39: "Blue's House",
             40: "Oak's Lab",
             # Add more map IDs as you explore the game
@@ -517,7 +450,6 @@ class PokemonController:
         try:
             notepad_content = self.read_notepad()
             recent_actions = self.get_recent_actions_text()
-            #print(recent_actions)
             direction_guidance = self.get_direction_guidance_text()
             current_map = self.get_map_name(self.map_id)
             
@@ -549,18 +481,9 @@ class PokemonController:
             # Optionally enhance brightness slightly
             brightness_enhancer = ImageEnhance.Brightness(enhanced_image)
             final_image = brightness_enhancer.enhance(1.1)  # Increase brightness by 10%
-
-            final_image.save(self.config["screenshot_process_path"])
-
-            response, image_text = self.llm_client.call_with_images(
-                message="Describe image in detail, without any function call. Do not give any location name, only describe the scene",
-                images_path=[self.config["screenshot_process_path"]]
-            )
-
-            print(f"Screenshot Detail: {image_text}")
             
             prompt = f"""
-            You are an AI playing Pokémon Yellow, you are the character with the red hat. Look at this screenshot and choose ONE button to press.
+            You are an AI playing Pokémon Red, you are the character with the red hat. Look at this screenshot and choose ONE button to press.
             
             ## Current Location
             You are in {current_map}
@@ -592,11 +515,10 @@ class PokemonController:
             ## URGENT WARNING: DO NOT PRESS A UNLESS YOU ARE ON THE CORRECT LETTER!
             
             ## Navigation Rules:
-            - If you've pressed the same button 3+ times with no change also include A,B or the position no change , TRY A DIFFERENT DIRECTION OR ACTIONS
+            - If you've pressed the same button 3+ times with no change, TRY A DIFFERENT DIRECTION
             - You must be DIRECTLY ON TOP of exits (red mats, doors, stairs) to use them
             - Light gray or black space is NOT walkable - it's a wall/boundary you need to use the exits (red mats, doors, stairs)
-            - To INTERACT with objects or NPCs, you MUST be FACING them and then press A.
-            - If the text box is shown, your character cannot move, you must press A.
+            - To INTERACT with objects or NPCs, you MUST be FACING them and then press A
             - When you enter a new area or discover something important, UPDATE THE NOTEPAD using the update_notepad function
             
             {recent_actions}
@@ -605,62 +527,56 @@ class PokemonController:
             
             ## Long-term Memory (Game State):
             {notepad_content}
-
-            ## Screenshot Information
-            {image_text}
             
             IMPORTANT: After each significant change (entering new area, talking to someone, finding items), use the update_notepad function to record what you learned or where you are.
             
             ## IMPORTANT INSTRUCTIONS:
-            1. FIRST, give information about current situation and objectives.
+            1. FIRST, provide a SHORT paragraph (2-3 sentences) describing what you see in the screenshot.
             2. THEN, provide a BRIEF explanation of what you plan to do and why.
-            3. FINALLY, use the press_button() function to execute your decision.
-
-            IMPORTANT: You MUST use the press_button() function. Select which button to press (A, B, UP, DOWN, LEFT, RIGHT, START or SELECT).
+            3. FINALLY, use the press_button function to execute your decision.
             """
             
+            images = [final_image]
             self.logger.section(f"Requesting decision from LLM")
             
             response, tool_calls, text = self.llm_client.call_with_tools(
                 message=prompt,
-                tools=self.tools
+                tools=self.tools,
+                images=images
             )
             
             print(f"LLM Text Response: {text}")
             
             button_code = None
             
-            if tool_calls:
-                for call in tool_calls:
-                    if call.name == "update_notepad":
-                        content = call.arguments.get("content", "")
-                        if content:
-                            self.update_notepad(content)
-                            print(f"Updated notepad with: {content[:50]}...")
+            for call in tool_calls:
+                if call.name == "update_notepad":
+                    content = call.arguments.get("content", "")
+                    if content:
+                        self.update_notepad(content)
+                        print(f"Updated notepad with: {content[:50]}...")
+                
+                elif call.name == "press_button":
+                    button = call.arguments.get("button", "").upper()
+                    button_map = {
+                        "A": 0, "B": 1, "SELECT": 2, "START": 3,
+                        "RIGHT": 4, "LEFT": 5, "UP": 6, "DOWN": 7,
+                        "R": 8, "L": 9
+                    }
                     
-                    elif call.name == "press_button":
-                        button = call.arguments.get("button", "").upper()
-                        button = button.strip().strip("'\"")
-                        button_map = {
-                            "A": 0, "B": 1, "SELECT": 2, "START": 3,
-                            "RIGHT": 4, "LEFT": 5, "UP": 6, "DOWN": 7,
-                            "R": 8, "L": 9
-                        }
+                    if button in button_map:
+                        button_code = button_map[button]
+                        self.logger.success(f"Tool used button: {button}")
                         
-                        if button in button_map:
-                            button_code = button_map[button]
-                            self.logger.success(f"Tool used button: {button}")
-                            
-                            # Store timestamp, button, reasoning, and position/direction
-                            timestamp = time.strftime("%H:%M:%S")
-                            #print(len(self.recent_actions))
-                            self.recent_actions.append(
-                                (timestamp, button, "", self.player_direction, 
-                                self.player_x, self.player_y, self.map_id)
-                            )
-                            
-                            self.logger.ai_action(button, button_code)
-                            return {'button': button_code}
+                        # Store timestamp, button, reasoning, and position/direction
+                        timestamp = time.strftime("%H:%M:%S")
+                        self.recent_actions.append(
+                            (timestamp, button, text, self.player_direction, 
+                            self.player_x, self.player_y, self.map_id)
+                        )
+                        
+                        self.logger.ai_action(button, button_code)
+                        return {'button': button_code}
             
             if button_code is None:
                 self.logger.warning("No press_button tool call found!")
@@ -812,7 +728,7 @@ class PokemonController:
                 try:
                     self.logger.section("Waiting for emulator connection...")
                     client_socket, client_address = self.server_socket.accept()
-                    client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
                     try:
                         client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
                         client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
