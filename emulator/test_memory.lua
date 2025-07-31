@@ -9,9 +9,10 @@ updateInterval = 1  -- Send updates every second
 -- Memory addresses for Pokemon Red (Game Boy)
 local memoryAddresses = {
     playerDirection = 0xC109,  -- Direction facing (0:Down, 4:Up, 8:Left, 12:Right)
-    playerX = 0xD362,          -- X coordinate on map
+    playerX = 0xD360,          -- X coordinate on map
     playerY = 0xD361,          -- Y coordinate on map
-    mapId = 0xD35E,            -- Current map ID
+    mapId = 0xD35D,            -- Current map ID
+    textmode = 0xCFC3,         -- Is textbox show
     -- Add more addresses as we discover them
 }
 
@@ -52,6 +53,7 @@ function readGameMemory()
     
     -- Read map ID
     memoryData.mapId = emu:read8(memoryAddresses.mapId)
+    memoryData.textmode = emu:read8(memoryAddresses.textmode)
     
     return memoryData
 end
@@ -69,6 +71,7 @@ function monitorMemory()
         debugBuffer:print("Player Direction: " .. memoryData.direction.text .. " (Value: " .. memoryData.direction.value .. ")\n")
         debugBuffer:print("Player Position: X=" .. memoryData.position.x .. ", Y=" .. memoryData.position.y .. "\n")
         debugBuffer:print("Map ID: " .. memoryData.mapId .. "\n")
+        debugBuffer:print("Textmode: " .. memoryData.textmode .. "\n")
         
         -- Send to Python if socket connected
         if statusSocket then
@@ -78,6 +81,7 @@ function monitorMemory()
                 "\"position\":{\"x\":" .. memoryData.position.x .. 
                 ",\"y\":" .. memoryData.position.y .. "}," ..
                 "\"mapId\":" .. memoryData.mapId ..
+                "\"textmode\":" .. memoryData.textmode ..
                 "}"
                 
             sendMessage("memory_data", jsonData)

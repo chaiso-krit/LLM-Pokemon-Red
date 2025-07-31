@@ -9,6 +9,9 @@ import sys
 import atexit
 import argparse
 import json
+import pickle
+import textwrap
+import pyjson5
 from collections import deque
 from typing import Dict, List, Any, Tuple
 
@@ -60,35 +63,19 @@ class GeminiClient:
         genai.configure(api_key=self.api_key)
         self.client = genai
     
-    def call_with_tools(self, message: str, tools: List[Tool], images: List[PIL.Image.Image] = None) -> Tuple[Any, List[ToolCall], str]:
+    def call_with_tools(self, history: any, message: str, tools: List[Tool], images: List[PIL.Image.Image] = None) -> Tuple[Any, List[ToolCall], str]:
         """
         Call Gemini with the given message and tools, optionally including images
         """
         import google.generativeai as genai
         
-        provider_tools = [tool.to_gemini_format() for tool in tools]
-        
         model = self.client.GenerativeModel(model_name=self.model_name)
         
-        system_message = """
-        You are playing Pokémon Red. Your job is to press buttons to control the game.
-        
-        IMPORTANT: After analyzing the screenshot, you MUST use the press_button function.
-        You are REQUIRED to use the press_button function with every response.
-        
-        NEVER just say what button to press - ALWAYS use the press_button function to actually press it.
-        """
-        
         chat = model.start_chat(
-            history=[
-                {"role": "user", "parts": [system_message]},
-                {"role": "model", "parts": ["I understand. For every screenshot, I will use the press_button function to specify which button to press (A, B, UP, DOWN, etc.)."]}
-            ]
+            history=history
         )
         
-        enhanced_message = f"{message}\n\nIMPORTANT: You MUST use the press_button function. Select which button to press (A, B, UP, DOWN, LEFT, RIGHT, START or SELECT)."
-        
-        content_parts = [enhanced_message]
+        content_parts = [message]
         
         if images:
             for image in images:
@@ -97,12 +84,8 @@ class GeminiClient:
         response = chat.send_message(
             content=content_parts,
             generation_config={
-                "max_output_tokens": self.max_tokens,
-                "temperature": 0.2,
-                "top_p": 0.95,
-                "top_k": 0
+                "max_output_tokens": self.max_tokens
             },
-            tools={"function_declarations": provider_tools}
         )
         
         return response, self._parse_tool_calls(response), self._extract_text(response)
@@ -194,11 +177,13 @@ class PokemonController:
         self.server_socket = None
         self.tools = self._define_tools()
         
-        self.notepad_path = self.config['notepad_path']
+        self.notepad_path = self.config['tips_path']
         self.screenshot_path = self.config['screenshot_path']
+        self.recent_actions_path = self.config['recent_actions_path']
         self.current_client = None
         self.running = True
         self.decision_cooldown = self.config['decision_cooldown']
+        self.button_cooldown = self.config.get('button_cooldown', 3.0)
         self.client_threads = []
         self.debug_mode = self.config.get('debug_mode', False)
         
@@ -207,6 +192,7 @@ class PokemonController:
         self.player_x = 0
         self.player_y = 0
         self.map_id = 0
+        self.textbox = 0
         
         # Processing state flags
         self.is_processing = False
@@ -322,15 +308,9 @@ class PokemonController:
             os.makedirs(os.path.dirname(self.notepad_path), exist_ok=True)
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
             with open(self.notepad_path, 'w') as f:
-                f.write("# Pokémon Red Game Progress\n\n")
+                f.write("# Pokémon Yellow Game Information\n")
                 f.write(f"Game started: {timestamp}\n\n")
-                f.write("## Current Objectives\n- Enter my name 'Gemini' and give my rival a name.\n\n")
-                f.write("## Exit my house\n\n")
-                f.write("## Current Objectives\n- Find Professor Oak to get first Pokémon\n- Start Pokémon journey\n\n")
-                f.write("## Current Location\n- Starting in player's house in Pallet Town\n\n")
-                f.write("## Game Progress\n- Just beginning the adventure\n\n")
-                f.write("## Items\n- None yet\n\n")
-                f.write("## Pokémon Team\n- None yet\n\n")
+                f.write("## Map of Yellow house, Stair is on top right of the scene, exit is on the first floor\n\n")
 
     def read_notepad(self):
         """Read the current notepad content"""
@@ -388,14 +368,23 @@ class PokemonController:
 
     def get_recent_actions_text(self):
         """Get formatted text of recent actions with reasoning and position/direction"""
-        if not self.recent_actions:
-            return "No recent actions."
-        
-        recent_actions_text = "## Short-term Memory (Recent Actions and Reasoning):\n"
-        for i, (timestamp, button, reasoning, direction, x, y, map_id) in enumerate(self.recent_actions, 1):
-            recent_actions_text += f"{i}. [{timestamp}] Pressed {button} while facing {direction} at position ({x}, {y}) on map {map_id}\n"
-            recent_actions_text += f"   Reasoning: {reasoning.strip()}\n\n"
-        return recent_actions_text
+        if not os.path.exists(self.recent_actions_path):
+            os.makedirs(os.path.dirname(self.recent_actions_path), exist_ok=True)
+            return [{
+                "turn": 0,
+                "thoughts": "",
+                "memory": "",
+                "buttons": "",
+            }]
+        pk_file = open(self.recent_actions_path, 'rb')
+        turns_list = pickle.load(pk_file)
+        pk_file.close()
+        return turns_list
+    
+    def update_recent_actions(self, actions_list):
+        pk_file = open(self.recent_actions_path, 'wb')
+        pickle.dump(actions_list, pk_file)
+        pk_file.close()
 
     def get_direction_guidance_text(self):
         """Generate guidance text about player orientation and interactions"""
@@ -407,14 +396,18 @@ class PokemonController:
         }
         
         facing_direction = directions.get(self.player_direction, self.player_direction)
+
+        textbox_status = "false" if self.textbox == 0 else "true"
         
         guidance = f"""
         ## Navigation Tips:
         - To INTERACT with objects or NPCs, you MUST be FACING them and then press A
         - Your current direction is {self.player_direction} (facing {facing_direction})
-        - Your current position is (X={self.player_x}, Y={self.player_y}) on map {self.map_id}
+        - Your current position is (X={self.player_x}, Y={self.player_y}) on map {self.get_map_name(self.map_id)}
         - If you need to face a different direction, press the appropriate directional button first
         - In buildings, look for exits via stairs, doors, or red mats and walk directly over them
+        - The current status of textbox is {textbox_status}
+        - If there is textbox show, you cannot move
         """
         
         return guidance
@@ -431,14 +424,18 @@ class PokemonController:
             13: "Route 2",
             14: "Route 3",
             15: "Route 4",
-            37: "Red's House 1F",
-            38: "Red's House 2F",
+            37: "Player's House 1F",
+            38: "Player's House 2F",
             39: "Blue's House",
             40: "Oak's Lab",
             # Add more map IDs as you explore the game
         }
         
         return map_names.get(map_id, f"Unknown Area (Map ID: {map_id})")
+    
+    def loose_parse_json(self, json_string: str):
+        json_substring = json_string[json_string.find("{") : json_string.rfind("}") + 1]
+        return pyjson5.loads(json_substring)
 
     def process_screenshot(self, screenshot_path=None):
         """Process a screenshot with enhanced game state information"""
@@ -451,7 +448,8 @@ class PokemonController:
             notepad_content = self.read_notepad()
             recent_actions = self.get_recent_actions_text()
             direction_guidance = self.get_direction_guidance_text()
-            current_map = self.get_map_name(self.map_id)
+            self.logger.debug(f"direction guide: {direction_guidance}")
+            current_memory = recent_actions[-1]["memory"]
             
             path_to_use = screenshot_path if screenshot_path else self.screenshot_path
             
@@ -481,106 +479,92 @@ class PokemonController:
             # Optionally enhance brightness slightly
             brightness_enhancer = ImageEnhance.Brightness(enhanced_image)
             final_image = brightness_enhancer.enhance(1.1)  # Increase brightness by 10%
-            
-            prompt = f"""
-            You are an AI playing Pokémon Red, you are the character with the red hat. Look at this screenshot and choose ONE button to press.
-            
-            ## Current Location
-            You are in {current_map}
-            Position: X={self.player_x}, Y={self.player_y}
-            
-            ## Current Direction
-            You are facing: {self.player_direction}
-            
-            ## Controls:
-            - A: To talk to people or interact with objects or advance text (NOT for entering/exiting buildings)
-            - B: To cancel or go back
-            - UP, DOWN, LEFT, RIGHT: To move your character (use these to enter/exit buildings)
-            - START: To open the main menu
-            - SELECT: Rarely used special function
-            
-            
-            ## Name Entry Screen Guide:
-            - The cursor is a BLACK TRIANGLE/POINTER (▶) on the left side of the currently selected letter
-            - The letter that will be selected is the one the BLACK TRIANGLE is pointing to
-            - To navigate to a different letter, use UP, DOWN, LEFT, RIGHT buttons
-            - To enter a letter, press A when the cursor is pointing to that letter
-            - The keyboard layout is as follows:
-            ROW 1: A B C D E F G H I
-            ROW 2: J K L M N O P Q R
-            ROW 3: S T U V W X Y Z
-            ROW 4: Special characters
-            ROW 5: END (bottom right)
 
-            ## URGENT WARNING: DO NOT PRESS A UNLESS YOU ARE ON THE CORRECT LETTER!
+            history=[
+                {
+                    "role": "user", 
+                    "parts": [textwrap.dedent(
+                        """\
+                You are currently playing Pokémon Yellow. You should output a JSON object containing the following keys:
+                {
+                thoughts: string;
+                memory: any;
+                buttons: ("A" | "B" | "UP" | "DOWN" | "LEFT" | "RIGHT" | "START")[];
+                }
+                
+                "thoughts": A short string in which you should analyze the current situation and think step-by-step about what to do next. This will also serve as live commentary, read out to the YouTube audience.
+                "memory": Arbitrary JSON containing notes to your future self. This should include both short and long term goals and important information you learn. This is the only information that will be passed to your future self, so you should include anything from the previous session that you still want to remember including any important lessons that you've learned while removing anything no longer relevant to save on token cost. For example, if something you've tried to achieve a goal has not worked many times in a row, you might want to record it in your memory for future reference.
+                "buttons": A sequence of button presses you want to input into the game. These will be entered one second apart so you can safely navigate entire tiles or select menu options. To be efficient, try to plan ahead and input as many button presses in sequence as you can.
+                
+                Only output JSON. Do not include a Markdown block around it.
+                            """
+                    )]},
+                {
+                    "role": "user",
+                    "parts": [f"""Here is your current working memory in JSON: {json.dumps(current_memory)}"""],
+                },
+                {
+                    "role": "user",
+                    "parts": [f"""Here is information from expert: {notepad_content}"""],
+                },
+                {
+                    "role": "user",
+                    "parts": [f"Next is the summary of your most recent turns. Study them closely. What did you intend to do? Did you succeed? What went wrong? What did you learn, and what should you do next?"],
+                },
+                {
+                    "role": "user",
+                    "parts": [f"Turn {turn['turn']}. Internal thoughts: {turn['thoughts']}; Button presses: {json.dumps(turn['buttons'])}." for turn in recent_actions[-5:]],   
+                }]
             
-            ## Navigation Rules:
-            - If you've pressed the same button 3+ times with no change, TRY A DIFFERENT DIRECTION
-            - You must be DIRECTLY ON TOP of exits (red mats, doors, stairs) to use them
-            - Light gray or black space is NOT walkable - it's a wall/boundary you need to use the exits (red mats, doors, stairs)
-            - To INTERACT with objects or NPCs, you MUST be FACING them and then press A
-            - When you enter a new area or discover something important, UPDATE THE NOTEPAD using the update_notepad function
-            
-            {recent_actions}
-            
-            {direction_guidance}
-            
-            ## Long-term Memory (Game State):
-            {notepad_content}
-            
-            IMPORTANT: After each significant change (entering new area, talking to someone, finding items), use the update_notepad function to record what you learned or where you are.
-            
-            ## IMPORTANT INSTRUCTIONS:
-            1. FIRST, provide a SHORT paragraph (2-3 sentences) describing what you see in the screenshot.
-            2. THEN, provide a BRIEF explanation of what you plan to do and why.
-            3. FINALLY, use the press_button function to execute your decision.
-            """
+            prompt = f"{direction_guidance}\nThe screenshot is the current in-game situation. Respond accordingly."
             
             images = [final_image]
             self.logger.section(f"Requesting decision from LLM")
             
             response, tool_calls, text = self.llm_client.call_with_tools(
+                history=history,
                 message=prompt,
-                tools=self.tools,
+                tools=[],
                 images=images
             )
+
+            gpt_response = self.loose_parse_json(text)
+
+            next_action = {
+                "turn": recent_actions[-1]["turn"] + 1,
+                "thoughts": gpt_response["thoughts"],
+                "memory": gpt_response["memory"],
+                "buttons": gpt_response["buttons"]
+            }
+            recent_actions.append(next_action)
+
+            self.update_recent_actions(recent_actions)
             
-            print(f"LLM Text Response: {text}")
+            #print(f"LLM Text Response: {text}")
+            print(f"AI Thoughts: {gpt_response['thoughts']}")
+            print(f"AI Memory: {gpt_response['memory']}")
+            print(f"Buttons: {gpt_response['buttons']}")
             
-            button_code = None
+            button_list = []
             
-            for call in tool_calls:
-                if call.name == "update_notepad":
-                    content = call.arguments.get("content", "")
-                    if content:
-                        self.update_notepad(content)
-                        print(f"Updated notepad with: {content[:50]}...")
-                
-                elif call.name == "press_button":
-                    button = call.arguments.get("button", "").upper()
-                    button_map = {
-                        "A": 0, "B": 1, "SELECT": 2, "START": 3,
-                        "RIGHT": 4, "LEFT": 5, "UP": 6, "DOWN": 7,
-                        "R": 8, "L": 9
-                    }
+            for button in gpt_response["buttons"]:
+                button = button.upper()
+                button_map = {
+                    "A": 0, "B": 1, "SELECT": 2, "START": 3,
+                    "RIGHT": 4, "LEFT": 5, "UP": 6, "DOWN": 7,
+                    "R": 8, "L": 9
+                }
                     
-                    if button in button_map:
-                        button_code = button_map[button]
-                        self.logger.success(f"Tool used button: {button}")
+                if button in button_map:
+                    button_code = button_map[button]
+                    #self.logger.success(f"Tool used button: {button}")
                         
-                        # Store timestamp, button, reasoning, and position/direction
-                        timestamp = time.strftime("%H:%M:%S")
-                        self.recent_actions.append(
-                            (timestamp, button, text, self.player_direction, 
-                            self.player_x, self.player_y, self.map_id)
-                        )
-                        
-                        self.logger.ai_action(button, button_code)
-                        return {'button': button_code}
-            
-            if button_code is None:
+                    button_list.append(button_code)
+
+            if len(button_list) == 0:
                 self.logger.warning("No press_button tool call found!")
-                return None
+
+            return {'button_list': button_list}
             
         except Exception as e:
             self.logger.error(f"Error processing screenshot: {e}")
@@ -645,6 +629,7 @@ class PokemonController:
                             self.player_x = int(content[2])
                             self.player_y = int(content[3])
                             self.map_id = int(content[4])
+                            self.textbox = int(content[5])
                             
                             self.logger.debug(f"Game State: Direction={self.player_direction}, " +
                                              f"Position=({self.player_x}, {self.player_y}), " +
@@ -655,19 +640,22 @@ class PokemonController:
                                 # Process the screenshot with game state info
                                 decision = self.process_screenshot(screenshot_path)
                                 
-                                if decision and decision.get('button') is not None:
-                                    try:
-                                        button_code = str(decision['button'])
-                                        self.logger.debug(f"Sending button code to emulator: {button_code}")
-                                        client_socket.send(button_code.encode('utf-8') + b'\n')
-                                        self.logger.success("Button command sent to emulator")
-                                        self.emulator_ready = False
-                                        
-                                        # Update the last decision time
-                                        self.last_decision_time = time.time()
-                                    except Exception as e:
-                                        self.logger.error(f"Failed to send button command: {e}")
-                                        break
+                                if decision and decision.get('button_list') is not None:
+                                    self.emulator_ready = False
+                                            
+                                    # Update the last decision time
+                                    self.last_decision_time = time.time()
+
+                                    for button_code in decision.get('button_list'):
+                                        try:
+                                            button_code = str(button_code)
+                                            self.logger.debug(f"Sending button code to emulator: {button_code}")
+                                            client_socket.send(button_code.encode('utf-8') + b'\n')
+                                            self.logger.debug("Button command sent to emulator")
+                                            time.sleep(self.button_cooldown)
+
+                                        except Exception as e:
+                                            self.logger.error(f"Failed to send button command: {e}")  
                                 else:
                                     # If no decision was made, we still need to respect the cooldown
                                     self.last_decision_time = time.time()

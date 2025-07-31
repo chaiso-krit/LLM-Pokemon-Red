@@ -8,15 +8,20 @@ local currentKeyIndex = nil
 local keyPressStartFrame = 0
 local keyPressFrames = 2   -- Hold keys for 2 frames
 
+-- Path to screenshot folder
+local screenshotDir = ""
+
 -- Path settings with absolute path (change this to your path)
-local screenshotPath = "/Users/alex/Documents/LLM-Pokemon-Red-Benchmark/data/screenshots/screenshot.png"
+local screenshotPath = screenshotDir .. "screenshot.png"
 
 -- Memory addresses for Pokemon Red (Game Boy)
 local memoryAddresses = {
     playerDirection = 0xC109,  -- Direction facing (0:Down, 4:Up, 8:Left, 12:Right)
-    playerX = 0xD362,          -- X coordinate on map
+    playerX = 0xD360,          -- X coordinate on map
     playerY = 0xD361,          -- Y coordinate on map
-    mapId = 0xD35E,            -- Current map ID
+    mapId = 0xD35D,            -- Current map ID
+    textmode = 0xCFC3,         -- Is textbox show
+    -- Add more addresses as we discover them
 }
 
 -- Debug buffer setup
@@ -56,6 +61,7 @@ function readGameMemory()
     
     -- Read map ID
     memoryData.mapId = emu:read8(memoryAddresses.mapId)
+    memoryData.textmode = emu:read8(memoryAddresses.textmode)
     
     return memoryData
 end
@@ -63,7 +69,7 @@ end
 -- Screenshot capture function with game state information
 function captureAndSendScreenshot()
     -- Create directory if it doesn't exist
-    os.execute("mkdir -p \"/Users/alex/Documents/LLM-Pokemon-Red-Benchmark/data/screenshots\"")
+    os.execute("mkdir -p \"" .. screenshotDir .. "\"")
     
     -- Take the screenshot
     emu:screenshot(screenshotPath)
@@ -77,7 +83,8 @@ function captureAndSendScreenshot()
         direction = memoryData.direction.text,
         x = memoryData.position.x,
         y = memoryData.position.y,
-        mapId = memoryData.mapId
+        mapId = memoryData.mapId,
+        textmode = memoryData.textmode
     }
     
     -- Convert to a string format for sending
@@ -85,7 +92,8 @@ function captureAndSendScreenshot()
                       "||" .. dataPackage.direction .. 
                       "||" .. dataPackage.x .. 
                       "||" .. dataPackage.y .. 
-                      "||" .. dataPackage.mapId
+                      "||" .. dataPackage.mapId ..
+                      "||" .. dataPackage.textmode 
     
     -- Send combined data to Python controller
     sendMessage("screenshot_with_state", dataString)
@@ -94,6 +102,7 @@ function captureAndSendScreenshot()
     debugBuffer:print("Direction: " .. dataPackage.direction .. "\n")
     debugBuffer:print("Position: X=" .. dataPackage.x .. ", Y=" .. dataPackage.y .. "\n")
     debugBuffer:print("Map ID: " .. dataPackage.mapId .. "\n")
+    debugBuffer:print("Textbox: " .. dataPackage.textmode .. "\n")
     
     -- Set flag back to waiting for next request
     waitingForRequest = true
@@ -223,6 +232,6 @@ if emu then
     startSocket()
     
     -- Create directory on startup
-    os.execute("mkdir -p \"/Users/alex/Documents/LLM-Pokemon-Red-Benchmark/data/screenshots\"")
+    os.execute("mkdir -p \"" .. screenshotDir .. "\"")
     debugBuffer:print("Created screenshot directories\n")
 end
